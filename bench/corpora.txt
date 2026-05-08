@@ -1,0 +1,7 @@
+# name|tier|url|notes
+canterbury|standard|https://corpus.canterbury.ac.nz/resources/cantrbry.tar.gz|classic corpus
+silesia|standard|https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip|mixed 200 MiB corpus
+enwik8|standard|https://www.mattmahoney.net/dc/enwik8.zip|100 MiB Wikipedia XML prefix
+enwik9|release|https://www.mattmahoney.net/dc/enwik9.zip|1 GiB Wikipedia XML prefix
+pizzachili|release|https://pizzachili.dcc.uchile.cl/repcorpus.html|repetitive corpus index page
+gharchive|release|https://www.gharchive.org/|choose fixed hourly JSON events slice
