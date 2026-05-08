@@ -3,12 +3,17 @@ use crate::algorithms::lzma::{CompressionMode, LzmaProperties, MatchFinderKind};
 use crate::algorithms::lzma2;
 use crate::error::{Error, Result};
 
+use rayon::prelude::*;
+
 use std::io::{Read, Write};
 
 const FOOTER_MAGIC: [u8; 2] = [0x59, 0x5A];
 const HEADER_MAGIC: [u8; 6] = [0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00];
 const LZMA2_FILTER_ID: u64 = 0x21;
-const STREAMING_MAX_IN_FLIGHT_BLOCKS: usize = 2;
+const PARALLEL_BLOCK_SIZE_LEVEL_0_TO_3: u64 = 8 * 1024 * 1024;
+const PARALLEL_BLOCK_SIZE_LEVEL_4_TO_6: u64 = 14 * 1024 * 1024;
+const PARALLEL_BLOCK_SIZE_LEVEL_7_TO_9: u64 = 32 * 1024 * 1024;
+const PARALLEL_BATCH_MAX_BLOCKS: usize = 64;
 
 #[derive(Clone, Debug)]
 pub struct XzOptions {
@@ -165,38 +170,12 @@ fn encode_blocks_parallel(
     options: &XzOptions,
     ranges: &[(usize, usize)],
 ) -> Result<Vec<Block>> {
-    let mut blocks = Vec::with_capacity(ranges.len());
-    let mut index = 0usize;
-    let batch_size = options.threads as usize;
-
-    while index < ranges.len() {
-        let end = (index + batch_size).min(ranges.len());
-        let batch = &ranges[index..end];
-        let mut results = Vec::new();
-
-        std::thread::scope(|scope| {
-            let mut handles = Vec::new();
-            for &(start, end) in batch {
-                handles.push(scope.spawn(move || encode_block(&input[start..end], options)));
-            }
-
-            for handle in handles {
-                results.push(
-                    handle
-                        .join()
-                        .map_err(|_| Error::Message("worker panicked".into())),
-                );
-            }
-        });
-
-        for result in results {
-            blocks.push(result??);
-        }
-
-        index = end;
-    }
-
-    Ok(blocks)
+    with_parallel_pool(options.threads, || {
+        ranges
+            .par_iter()
+            .map(|&(start, end)| encode_block(&input[start..end], options))
+            .collect()
+    })
 }
 
 fn encode_reader_blocks_serial<R: Read, W: Write>(
@@ -233,6 +212,7 @@ fn encode_reader_blocks_parallel<R: Read, W: Write>(
 ) -> Result<Vec<IndexRecord>> {
     let batch_size = streaming_batch_size(options.threads);
     let mut records = Vec::new();
+    let pool = parallel_pool(options.threads)?;
 
     loop {
         let inputs = read_input_batch(reader, block_size, batch_size)?;
@@ -240,7 +220,7 @@ fn encode_reader_blocks_parallel<R: Read, W: Write>(
             break;
         }
 
-        let blocks = encode_owned_blocks_parallel(&inputs, options)?;
+        let blocks = encode_owned_blocks_parallel(&pool, &inputs, options)?;
         for block in blocks {
             write_encoded_block(writer, block, &mut records)?;
         }
@@ -290,30 +270,17 @@ fn read_input_block<R: Read>(reader: &mut R, block_size: usize) -> Result<Vec<u8
     Ok(input)
 }
 
-fn encode_owned_blocks_parallel(inputs: &[Vec<u8>], options: &XzOptions) -> Result<Vec<Block>> {
-    let mut blocks = Vec::with_capacity(inputs.len());
-
-    std::thread::scope(|scope| {
-        let mut handles = Vec::new();
-        for input in inputs {
-            handles.push(scope.spawn(move || encode_block(input, options)));
-        }
-
-        for handle in handles {
-            blocks.push(
-                handle
-                    .join()
-                    .map_err(|_| Error::Message("worker panicked".into())),
-            );
-        }
-    });
-
-    let mut encoded = Vec::with_capacity(blocks.len());
-    for block in blocks {
-        encoded.push(block??);
-    }
-
-    Ok(encoded)
+fn encode_owned_blocks_parallel(
+    pool: &rayon::ThreadPool,
+    inputs: &[Vec<u8>],
+    options: &XzOptions,
+) -> Result<Vec<Block>> {
+    pool.install(|| {
+        inputs
+            .par_iter()
+            .map(|input| encode_block(input, options))
+            .collect()
+    })
 }
 
 fn write_encoded_block<W: Write>(
@@ -333,7 +300,23 @@ fn write_encoded_block<W: Write>(
 }
 
 fn streaming_batch_size(threads: u32) -> usize {
-    (threads as usize).clamp(1, STREAMING_MAX_IN_FLIGHT_BLOCKS)
+    (threads as usize).clamp(1, PARALLEL_BATCH_MAX_BLOCKS)
+}
+
+fn parallel_pool(threads: u32) -> Result<rayon::ThreadPool> {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads((threads as usize).max(1))
+        .build()
+        .map_err(|error| Error::Message(error.to_string()))
+}
+
+#[cfg(test)]
+fn with_parallel_pool<T, F>(threads: u32, operation: F) -> Result<T>
+where
+    T: Send,
+    F: FnOnce() -> Result<T> + Send,
+{
+    parallel_pool(threads)?.install(operation)
 }
 
 fn encode_block(input: &[u8], options: &XzOptions) -> Result<Block> {
@@ -727,8 +710,9 @@ fn validate_options(options: &XzOptions) -> Result<()> {
 }
 
 fn effective_block_size(options: &XzOptions) -> Result<usize> {
-    let default = (u64::from(options.dict_size) * 3).max(1024 * 1024);
-    let size = options.block_size.unwrap_or(default);
+    let size = options
+        .block_size
+        .unwrap_or_else(|| default_block_size(options));
 
     if size == 0 {
         return Err(Error::Usage("block size must be positive"));
@@ -739,6 +723,26 @@ fn effective_block_size(options: &XzOptions) -> Result<usize> {
     }
 
     Ok(size as usize)
+}
+
+fn default_block_size(options: &XzOptions) -> u64 {
+    let serial_default = (u64::from(options.dict_size) * 3).max(1024 * 1024);
+    if options.threads <= 1 {
+        return serial_default;
+    }
+
+    let dict_size = u64::from(options.dict_size);
+    if dict_size < 4 * 1024 * 1024 {
+        return (dict_size * 3).max(4 * 1024 * 1024);
+    }
+
+    if dict_size <= 4 * 1024 * 1024 {
+        PARALLEL_BLOCK_SIZE_LEVEL_0_TO_3
+    } else if dict_size <= 8 * 1024 * 1024 {
+        PARALLEL_BLOCK_SIZE_LEVEL_4_TO_6
+    } else {
+        PARALLEL_BLOCK_SIZE_LEVEL_7_TO_9
+    }
 }
 
 #[cfg(test)]
@@ -904,7 +908,10 @@ struct ParsedStream {
 
 #[cfg(test)]
 mod tests {
-    use super::{XzOptions, decode_stream, encode_reader_to_writer, encode_stream, inspect_stream};
+    use super::{
+        XzOptions, decode_stream, default_block_size, encode_reader_to_writer, encode_stream,
+        inspect_stream,
+    };
     use crate::algorithms::checks::CheckType;
     use crate::algorithms::lzma::{CompressionMode, MatchFinderKind};
 
@@ -922,6 +929,18 @@ mod tests {
             pb: 2,
             threads: 2,
         }
+    }
+
+    #[test]
+    fn parallel_default_block_size_exposes_more_work() {
+        let mut options = test_options(1);
+        options.block_size = None;
+        options.dict_size = 8 * 1024 * 1024;
+        options.threads = 1;
+        assert_eq!(default_block_size(&options), 24 * 1024 * 1024);
+
+        options.threads = 4;
+        assert_eq!(default_block_size(&options), 14 * 1024 * 1024);
     }
 
     #[test]
@@ -961,6 +980,29 @@ mod tests {
         for _ in 0..96 * 1024 {
             state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             input.push((state >> 24) as u8);
+        }
+
+        let encoded = encode_stream(&input, &options).unwrap();
+        let decoded = decode_stream(&encoded).unwrap();
+
+        assert_eq!(decoded, input);
+    }
+
+    #[test]
+    fn uncompressed_then_compressed_lzma2_round_trip() {
+        let options = test_options(512 * 1024);
+        let mut input = Vec::new();
+        let mut state = 0xCAFE_BABEu32;
+
+        for _ in 0..96 * 1024 {
+            state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            input.push((state >> 24) as u8);
+        }
+
+        for index in 0..8192 {
+            input.extend_from_slice(b"compressible tail alpha beta gamma ");
+            input.extend_from_slice(index.to_string().as_bytes());
+            input.push(b'\n');
         }
 
         let encoded = encode_stream(&input, &options).unwrap();

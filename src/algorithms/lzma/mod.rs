@@ -198,6 +198,20 @@ impl LzmaEncoder {
         self.refresh_price_tables();
     }
 
+    pub fn reset_dictionary(&mut self, options: EncoderOptions, input_len: usize) {
+        debug_assert_eq!(options.match_finder, MatchFinderKind::Bt4);
+
+        self.dictionary_start = 0;
+        self.finder = MatchFinderBt4::new(
+            input_len,
+            options.depth,
+            options.mode,
+            options.dict_size,
+            self.nice,
+        );
+        self.reset_state();
+    }
+
     pub(crate) fn snapshot_state(&self) -> LzmaEncoderState {
         LzmaEncoderState {
             align_price_count: self.align_price_count,
@@ -246,20 +260,35 @@ impl LzmaEncoder {
         self.pending_index = 0;
     }
 
-    pub fn encode_range(
+    pub(crate) fn encode_range_limited(
         &mut self,
         input: &[u8],
         start: usize,
         end: usize,
         dictionary_start: usize,
-    ) -> Result<Vec<u8>> {
-        let mut range = RangeEncoder::new();
+        output_limit: usize,
+    ) -> Result<Option<Vec<u8>>> {
+        self.encode_range_inner(input, start, end, dictionary_start, Some(output_limit))
+    }
+
+    fn encode_range_inner(
+        &mut self,
+        input: &[u8],
+        start: usize,
+        end: usize,
+        dictionary_start: usize,
+        output_limit: Option<usize>,
+    ) -> Result<Option<Vec<u8>>> {
+        let mut range = RangeEncoder::new(output_limit);
         let mut position = start;
         self.dictionary_start = dictionary_start;
 
         while position < end {
             let decision = self.parse_position(input, position, end);
             self.encode_decision(&mut range, input, position, decision)?;
+            if range.output_limit_reached() {
+                return Ok(None);
+            }
 
             position += decision.length as usize;
         }
@@ -1835,16 +1864,20 @@ struct RangeEncoder {
     cache_size: u32,
     low: u64,
     output: Vec<u8>,
+    output_limit: Option<usize>,
+    output_limit_reached: bool,
     range: u32,
 }
 
 impl RangeEncoder {
-    fn new() -> RangeEncoder {
+    fn new(output_limit: Option<usize>) -> RangeEncoder {
         RangeEncoder {
             cache: 0,
             cache_size: 0,
             low: 0,
             output: Vec::new(),
+            output_limit,
+            output_limit_reached: false,
             range: u32::MAX,
         }
     }
@@ -1905,12 +1938,19 @@ impl RangeEncoder {
         }
     }
 
-    fn finish(mut self) -> Vec<u8> {
+    fn finish(mut self) -> Option<Vec<u8>> {
         for _ in 0..5 {
             self.shift_low();
+            if self.output_limit_reached() {
+                return None;
+            }
         }
 
-        self.output
+        Some(self.output)
+    }
+
+    fn output_limit_reached(&self) -> bool {
+        self.output_limit_reached
     }
 
     fn shift_low(&mut self) {
@@ -1920,6 +1960,7 @@ impl RangeEncoder {
 
         if low < 0xFF00_0000 || high != 0 {
             self.output.push(self.cache.wrapping_add(high));
+            self.check_output_limit();
             self.cache = (low >> 24) as u8;
 
             if self.cache_size == 0 {
@@ -1929,6 +1970,7 @@ impl RangeEncoder {
             let carry_byte = high.wrapping_add(0xFF);
             loop {
                 self.output.push(carry_byte);
+                self.check_output_limit();
                 self.cache_size -= 1;
                 if self.cache_size == 0 {
                     return;
@@ -1937,6 +1979,14 @@ impl RangeEncoder {
         }
 
         self.cache_size += 1;
+    }
+
+    fn check_output_limit(&mut self) {
+        if let Some(limit) = self.output_limit
+            && self.output.len() > limit
+        {
+            self.output_limit_reached = true;
+        }
     }
 }
 
@@ -2971,11 +3021,29 @@ fn match_length_from(
     let limit = match_limit(position, end, nice);
     let mut length = start;
 
+    while length + 8 <= limit {
+        let current = read_u64_unaligned(input, position + length);
+        let previous = read_u64_unaligned(input, candidate + length);
+        if current != previous {
+            break;
+        }
+
+        length += 8;
+    }
+
     while length < limit && input[position + length] == input[candidate + length] {
         length += 1;
     }
 
     length
+}
+
+fn read_u64_unaligned(input: &[u8], offset: usize) -> u64 {
+    debug_assert!(offset + 8 <= input.len());
+
+    // The match finder probes arbitrary byte offsets, so aligned loads cannot
+    // be assumed. Bounds are established by match_length_from before each call.
+    unsafe { std::ptr::read_unaligned(input.as_ptr().add(offset).cast::<u64>()) }
 }
 
 fn match_limit(position: usize, end: usize, nice: usize) -> usize {

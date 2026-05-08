@@ -1,41 +1,11 @@
 pub fn crc32(data: &[u8]) -> u32 {
-    let mut crc = u32::MAX;
-
-    for &byte in data {
-        let mut value = (crc ^ u32::from(byte)) & 0xFF;
-
-        for _ in 0..8 {
-            if value & 1 == 1 {
-                value = (value >> 1) ^ 0xEDB8_8320;
-            } else {
-                value >>= 1;
-            }
-        }
-
-        crc = (crc >> 8) ^ value;
-    }
-
-    !crc
+    crc32fast::hash(data)
 }
 
 pub fn crc64(data: &[u8]) -> u64 {
-    let mut crc = u64::MAX;
-
-    for &byte in data {
-        let mut value = (crc ^ u64::from(byte)) & 0xFF;
-
-        for _ in 0..8 {
-            if value & 1 == 1 {
-                value = (value >> 1) ^ 0xC96C_5795_D787_0F42;
-            } else {
-                value >>= 1;
-            }
-        }
-
-        crc = (crc >> 8) ^ value;
-    }
-
-    !crc
+    let mut digest = crc64fast::Digest::new();
+    digest.write(data);
+    digest.sum64()
 }
 
 #[cfg(test)]

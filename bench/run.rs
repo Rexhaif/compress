@@ -7,6 +7,14 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 const XZ_LEVELS: &[u8] = &[1, 3, 6, 9];
+const XZ_THREAD_CASES: &[(&str, &str)] = &[
+    ("t1", "-T1"),
+    ("t2", "-T2"),
+    ("t4", "-T4"),
+    ("t8", "-T8"),
+    ("t16", "-T16"),
+    ("t0", "-T0"),
+];
 const ZSTD_LEVELS: &[u8] = &[1, 3, 10, 19];
 const DEFLATE_LEVELS: &[u8] = &[1, 6, 9];
 const BZIP2_LEVELS: &[u8] = &[1, 6, 9];
@@ -62,21 +70,30 @@ fn build_cases(compress: &OsStr, input: &Path) -> Vec<BenchCase> {
     let mut cases = Vec::new();
 
     for &level in XZ_LEVELS {
-        cases.push(BenchCase::compress_xz(compress, input, level, "t1", "-T1"));
-        cases.push(BenchCase::compress_xz(compress, input, level, "t0", "-T0"));
+        for &(thread_label, thread_arg) in XZ_THREAD_CASES {
+            cases.push(BenchCase::compress_xz(
+                compress,
+                input,
+                level,
+                thread_label,
+                thread_arg,
+            ));
+        }
     }
 
     if command_exists("xz") {
         for &level in XZ_LEVELS {
-            cases.push(BenchCase::xz(input, level, "t1", "-T1"));
-            cases.push(BenchCase::xz(input, level, "t0", "-T0"));
+            for &(thread_label, thread_arg) in XZ_THREAD_CASES {
+                cases.push(BenchCase::xz(input, level, thread_label, thread_arg));
+            }
         }
     }
 
     if command_exists("zstd") {
         for &level in ZSTD_LEVELS {
-            cases.push(BenchCase::zstd(input, level, "t1", "-T1"));
-            cases.push(BenchCase::zstd(input, level, "t0", "-T0"));
+            for &(thread_label, thread_arg) in XZ_THREAD_CASES {
+                cases.push(BenchCase::zstd(input, level, thread_label, thread_arg));
+            }
         }
     }
 

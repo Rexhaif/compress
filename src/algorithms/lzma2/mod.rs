@@ -6,6 +6,7 @@ use crate::error::{Error, Result};
 const LZMA2_COMPRESSED_UNPACK_MAX: usize = 2 * 1024 * 1024;
 const LZMA2_DENSE_CHUNK_MAX: usize = 192 * 1024;
 const LZMA2_NORMAL_CHUNK_MAX: usize = 128 * 1024;
+const LZMA2_PACKED_CHUNK_MAX: usize = 1 << 16;
 const LZMA2_UNCOMPRESSED_CHUNK_MAX: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug)]
@@ -25,15 +26,13 @@ pub fn encode(data: &[u8], options: &Lzma2Options) -> Result<Vec<u8>> {
     let mut offset = 0usize;
 
     while offset < data.len() {
-        let unpack_size = compressed_chunk_size(data, offset, options);
-        let packet = build_packet(
-            &mut encoder,
-            data,
-            offset,
-            candidate_end(data, offset, unpack_size),
-            options,
-            state,
-        )?;
+        let plan = plan_chunk(data, offset, options);
+        let end = candidate_end(data, offset, plan.unpack_size);
+        let packet = if plan.attempt_compression {
+            build_packet(&mut encoder, data, offset, end, options, state)?
+        } else {
+            build_uncompressed_packet(data, offset, end, state)
+        };
 
         encoded.extend_from_slice(&packet.bytes);
         state = packet.next_state;
@@ -46,18 +45,27 @@ pub fn encode(data: &[u8], options: &Lzma2Options) -> Result<Vec<u8>> {
     Ok(encoded)
 }
 
-fn compressed_chunk_size(data: &[u8], start: usize, options: &Lzma2Options) -> usize {
+fn plan_chunk(data: &[u8], start: usize, options: &Lzma2Options) -> ChunkPlan {
     if options.mode == CompressionMode::Fast {
-        return LZMA2_UNCOMPRESSED_CHUNK_MAX;
+        return ChunkPlan {
+            attempt_compression: true,
+            unpack_size: LZMA2_UNCOMPRESSED_CHUNK_MAX,
+        };
     }
 
     let score = compressibility_score(data, start);
-    if score >= 70 && has_low_byte_variety(data, start) {
+    let low_variety = has_low_byte_variety(data, start);
+    let unpack_size = if score >= 70 && low_variety {
         LZMA2_DENSE_CHUNK_MAX
     } else if score >= 12 {
         LZMA2_NORMAL_CHUNK_MAX
     } else {
         LZMA2_UNCOMPRESSED_CHUNK_MAX
+    };
+
+    ChunkPlan {
+        attempt_compression: score >= 3 || low_variety,
+        unpack_size,
     }
 }
 
@@ -116,7 +124,9 @@ fn build_packet(
     state: Lzma2EncodeState,
 ) -> Result<PacketCandidate> {
     let resets_lzma_state = lzma_state_resets(&state);
-    if resets_lzma_state {
+    if !state.dictionary_reset_done {
+        encoder.reset_dictionary(lzma_options(options), data.len());
+    } else if resets_lzma_state {
         encoder.reset_state();
     }
 
@@ -126,27 +136,30 @@ fn build_packet(
     } else {
         start
     };
-    let compressed = encoder.encode_range(data, start, end, dictionary_start)?;
     let unpack_size = end - start;
     let mut bytes = Vec::new();
     let mut next_state = state;
-    let compressed_packet = compressed.len() <= (1 << 16)
-        && compressed.len() + compressed_header_size(&state)
-            < uncompressed_fallback_size(unpack_size)
-        && verify_lzma_chunk(
-            &compressed,
-            data,
-            start,
-            end,
-            options,
-            dictionary_start,
-            resets_lzma_state,
-        )?;
+    let compressed =
+        encoder.encode_range_limited(data, start, end, dictionary_start, LZMA2_PACKED_CHUNK_MAX)?;
+    let compressed_packet = if let Some(compressed) = compressed.as_ref() {
+        compressed.len() + compressed_header_size(&state) < uncompressed_fallback_size(unpack_size)
+            && verify_lzma_chunk(
+                compressed,
+                data,
+                start,
+                end,
+                options,
+                dictionary_start,
+                resets_lzma_state,
+            )?
+    } else {
+        false
+    };
 
     if compressed_packet {
         append_lzma_chunk(
             &mut bytes,
-            &compressed,
+            compressed.as_ref().expect("compressed packet was selected"),
             unpack_size,
             options.properties,
             &mut next_state,
@@ -163,6 +176,24 @@ fn build_packet(
     })
 }
 
+fn build_uncompressed_packet(
+    data: &[u8],
+    start: usize,
+    end: usize,
+    state: Lzma2EncodeState,
+) -> PacketCandidate {
+    let mut bytes = Vec::new();
+    let mut next_state = state;
+
+    append_uncompressed_packets(&mut bytes, data, start, end, &mut next_state);
+
+    PacketCandidate {
+        bytes,
+        end,
+        next_state,
+    }
+}
+
 fn sample_hash4(data: &[u8], position: usize) -> usize {
     let mut value = u32::from(data[position]);
     value |= u32::from(data[position + 1]) << 8;
@@ -173,7 +204,7 @@ fn sample_hash4(data: &[u8], position: usize) -> usize {
 }
 
 fn lzma_state_resets(state: &Lzma2EncodeState) -> bool {
-    !state.properties_written
+    !state.properties_written || !state.dictionary_reset_done
 }
 
 fn candidate_end(data: &[u8], start: usize, unpack_size: usize) -> usize {
@@ -245,7 +276,7 @@ fn append_lzma_chunk(
 
     let unpack_field = (unpack_size as u32) - 1;
     let pack_field = (compressed.len() as u32) - 1;
-    let has_properties = !state.properties_written;
+    let has_properties = !state.properties_written || !state.dictionary_reset_done;
     let control_base = if !state.dictionary_reset_done {
         0xE0
     } else if has_properties {
@@ -295,6 +326,8 @@ fn append_uncompressed_packets(
         state.dictionary_reset_done = true;
         offset = chunk_end;
     }
+
+    state.dictionary_reset_done = false;
 }
 
 fn uncompressed_packet(data: &[u8], reset_dictionary: bool) -> Vec<u8> {
@@ -338,6 +371,11 @@ struct PacketCandidate {
     bytes: Vec<u8>,
     end: usize,
     next_state: Lzma2EncodeState,
+}
+
+struct ChunkPlan {
+    attempt_compression: bool,
+    unpack_size: usize,
 }
 
 pub fn decode(data: &[u8], dict_size: u32) -> Result<Vec<u8>> {

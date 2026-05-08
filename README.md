@@ -45,14 +45,19 @@ state across compressed chunks when the format permits it, uses larger chunks on
 compressible data, and falls back to LZMA2 uncompressed packets when a chunk
 does not shrink.
 
+Multi-threaded compression (`-T2`, `-T4`, `-T0`, and so on) compresses
+independent XZ Blocks in parallel and preserves stream order in the output.
+When no `--block-size` is provided, multi-threaded mode uses smaller automatic
+Blocks than single-threaded mode so enough work is available for multiple cores.
+
 This is an interoperability-first implementation. XZ Blocks may contain multiple
 LZMA2 chunks and retain cross-chunk match history inside each Block. A true
 optimal parser and true binary-tree match finder are still future work. The
 decoder implements the `.xz` container, LZMA2 chunks, and raw LZMA range decoding
 for ordinary LZMA2 streams.
 
-The core implementation uses only the Rust standard library. Integrity checks
-CRC32, CRC64, SHA-256, and `none` are implemented in-tree.
+The core codec implementation is Rust. CRC32 and CRC64 use fast Rust
+implementations; SHA-256 and `none` are implemented in-tree.
 
 ## Examples
 

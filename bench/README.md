@@ -39,7 +39,8 @@ JSONL rows contain:
 
 - tool name, command line, detected tool version, git revision, corpus path,
   and corpus name.
-- compression level and thread label (`t1`, `t0`, or `auto`) for matrix cases.
+- compression level and thread label (`t1`, `t2`, `t4`, `t8`, `t16`, `t0`, or
+  `auto`) for matrix cases.
 - input bytes, compressed output bytes, compression wall time, and decompression
   wall time.
 - decompressed SHA-256 and `roundtrip_ok` when `sha256sum`, `shasum`, or
@@ -47,8 +48,9 @@ JSONL rows contain:
 
 Competitor commands should be version-pinned in result rows and optional at
 runtime. The default matrix includes `compress-xz` and `xz` at levels
-`1, 3, 6, 9` in `t1` and `t0` modes, `zstd` at levels `1, 3, 10, 19` in `t1`
-and `t0` modes, `gzip`/`pigz` and `bzip2`/`pbzip2` at levels `1, 6, 9`, plus
-`lz4`, `brotli`, and `7z` level sweeps when installed. Compression commands are
-fed through stdin in TUI mode so the progress line can show input-feed progress
-and MiB/s while each compressor runs.
+`1, 3, 6, 9` in `t1`, `t2`, `t4`, `t8`, `t16`, and `t0` modes, `zstd` at
+levels `1, 3, 10, 19` across the same thread labels, `gzip`/`pigz` and
+`bzip2`/`pbzip2` at levels `1, 6, 9`, plus `lz4`, `brotli`, and `7z` level
+sweeps when installed. Compression commands are fed through stdin in TUI mode so
+the progress line can show input-feed progress and MiB/s while each compressor
+runs.
