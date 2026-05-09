@@ -1,3 +1,4 @@
+use crate::algorithms::bzip2::{self, Bzip2Options};
 use crate::algorithms::checks::CheckType;
 use crate::algorithms::lzma::{CompressionMode, MatchFinderKind};
 use crate::algorithms::xz::{self, XzOptions};
@@ -15,106 +16,136 @@ pub fn execute(options: &Options) -> Result<()> {
         return Err(Error::Unsupported("process adapter"));
     }
 
-    if spec.name != "xz" {
+    if spec.name != "xz" && spec.name != "bzip2" {
         return Err(Error::Unsupported("algorithm"));
     }
 
-    let xz_options = build_xz_options(options)?;
+    let codec_options = build_codec_options(options)?;
 
     if options.files.is_empty() {
-        execute_stdio(options, &xz_options)
+        execute_stdio(options, &codec_options)
     } else {
-        execute_files(options, &xz_options)
+        execute_files(options, &codec_options)
     }
 }
 
-fn execute_stdio(options: &Options, xz_options: &XzOptions) -> Result<()> {
+enum CodecOptions {
+    Bzip2(Bzip2Options),
+    Xz(XzOptions),
+}
+
+fn execute_stdio(options: &Options, codec_options: &CodecOptions) -> Result<()> {
     match options.operation {
         Operation::Compress => {
             let stdin = std::io::stdin();
             let stdout = std::io::stdout();
 
-            xz::encode_reader_to_writer(stdin.lock(), stdout.lock(), xz_options)?;
+            match codec_options {
+                CodecOptions::Bzip2(options) => {
+                    bzip2::encode_reader_to_writer(stdin.lock(), stdout.lock(), options)?;
+                }
+                CodecOptions::Xz(options) => {
+                    xz::encode_reader_to_writer(stdin.lock(), stdout.lock(), options)?;
+                }
+            }
         }
         Operation::Decompress => {
             let mut input = Vec::new();
             std::io::stdin().read_to_end(&mut input)?;
-            let output = xz::decode_stream(&input)?;
+            let output = decode_stream(codec_options, &input)?;
             std::io::stdout().write_all(&output)?;
         }
         Operation::Test => {
             let mut input = Vec::new();
             std::io::stdin().read_to_end(&mut input)?;
-            let _output = xz::decode_stream(&input)?;
+            let _output = decode_stream(codec_options, &input)?;
         }
         Operation::List => {
             let mut input = Vec::new();
             std::io::stdin().read_to_end(&mut input)?;
-            let info = xz::inspect_stream(&input)?;
-            print_info("-", &info);
+            print_info("-", codec_options, &input)?;
         }
     }
 
     Ok(())
 }
 
-fn execute_files(options: &Options, xz_options: &XzOptions) -> Result<()> {
+fn execute_files(options: &Options, codec_options: &CodecOptions) -> Result<()> {
     for file in &options.files {
         let path = Path::new(file);
 
         match options.operation {
-            Operation::Compress => execute_file_compress(path, options, xz_options)?,
-            Operation::Decompress => execute_file_decompress(path, options)?,
-            Operation::Test => execute_file_test(path)?,
-            Operation::List => execute_file_list(path)?,
+            Operation::Compress => execute_file_compress(path, options, codec_options)?,
+            Operation::Decompress => execute_file_decompress(path, options, codec_options)?,
+            Operation::Test => execute_file_test(path, codec_options)?,
+            Operation::List => execute_file_list(path, codec_options)?,
         }
     }
 
     Ok(())
 }
 
-fn execute_file_compress(path: &Path, options: &Options, xz_options: &XzOptions) -> Result<()> {
+fn execute_file_compress(
+    path: &Path,
+    options: &Options,
+    codec_options: &CodecOptions,
+) -> Result<()> {
     if options.stdout {
         let input = fs::File::open(path)?;
+        let input_capacity = file_len_hint(&input);
         let stdout = std::io::stdout();
 
-        xz::encode_reader_to_writer(input, stdout.lock(), xz_options)?;
+        match codec_options {
+            CodecOptions::Bzip2(options) => {
+                bzip2::encode_reader_to_writer_with_capacity(
+                    input,
+                    stdout.lock(),
+                    options,
+                    input_capacity,
+                )?;
+            }
+            CodecOptions::Xz(options) => {
+                xz::encode_reader_to_writer(input, stdout.lock(), options)?;
+            }
+        }
         return Ok(());
     }
 
-    let target = compressed_path(path);
-    write_compressed_output_file(path, &target, options, xz_options)?;
+    let target = compressed_path(path, options.algorithm);
+    write_compressed_output_file(path, &target, options, codec_options)?;
 
     Ok(())
 }
 
-fn execute_file_decompress(path: &Path, options: &Options) -> Result<()> {
+fn execute_file_decompress(
+    path: &Path,
+    options: &Options,
+    codec_options: &CodecOptions,
+) -> Result<()> {
     let input = fs::read(path)?;
-    let output = xz::decode_stream(&input)?;
+    let output = decode_stream(codec_options, &input)?;
 
     if options.stdout {
         std::io::stdout().write_all(&output)?;
         return Ok(());
     }
 
-    let target = decompressed_path(path)?;
+    let target = decompressed_path(path, options.algorithm)?;
     write_output_file(path, &target, &output, options)?;
 
     Ok(())
 }
 
-fn execute_file_test(path: &Path) -> Result<()> {
+fn execute_file_test(path: &Path, codec_options: &CodecOptions) -> Result<()> {
     let input = fs::read(path)?;
-    let _output = xz::decode_stream(&input)?;
+    let _output = decode_stream(codec_options, &input)?;
 
     Ok(())
 }
 
-fn execute_file_list(path: &Path) -> Result<()> {
+fn execute_file_list(path: &Path, codec_options: &CodecOptions) -> Result<()> {
     let input = fs::read(path)?;
-    let info = xz::inspect_stream(&input)?;
-
-    print_info(&path.display().to_string(), &info);
+    print_info(&path.display().to_string(), codec_options, &input)?;
 
     Ok(())
 }
@@ -147,7 +178,7 @@ fn write_compressed_output_file(
     source: &Path,
     target: &Path,
     options: &Options,
-    xz_options: &XzOptions,
+    codec_options: &CodecOptions,
 ) -> Result<()> {
     if target.exists() && !options.force {
         return Err(Error::Message(format!(
@@ -158,9 +189,17 @@ fn write_compressed_output_file(
 
     let temporary = temporary_path(target);
     let input = fs::File::open(source)?;
+    let input_capacity = file_len_hint(&input);
     let output = fs::File::create(&temporary)?;
 
-    if let Err(error) = xz::encode_reader_to_writer(input, output, xz_options) {
+    let result = match codec_options {
+        CodecOptions::Bzip2(options) => {
+            bzip2::encode_reader_to_writer_with_capacity(input, output, options, input_capacity)
+        }
+        CodecOptions::Xz(options) => xz::encode_reader_to_writer(input, output, options),
+    };
+
+    if let Err(error) = result {
         let _ = fs::remove_file(&temporary);
         return Err(error);
     }
@@ -178,8 +217,53 @@ fn write_compressed_output_file(
     Ok(())
 }
 
+fn file_len_hint(file: &fs::File) -> usize {
+    file.metadata()
+        .ok()
+        .and_then(|metadata| usize::try_from(metadata.len()).ok())
+        .unwrap_or(0)
+}
+
+fn decode_stream(codec_options: &CodecOptions, input: &[u8]) -> Result<Vec<u8>> {
+    match codec_options {
+        CodecOptions::Bzip2(_) => bzip2::decode_stream(input),
+        CodecOptions::Xz(_) => xz::decode_stream(input),
+    }
+}
+
+fn build_codec_options(options: &Options) -> Result<CodecOptions> {
+    match options.algorithm {
+        Algorithm::Bzip2 => Ok(CodecOptions::Bzip2(build_bzip2_options(options)?)),
+        Algorithm::Lzma2 | Algorithm::Xz => Ok(CodecOptions::Xz(build_xz_options(options)?)),
+    }
+}
+
+fn build_bzip2_options(options: &Options) -> Result<Bzip2Options> {
+    if options.level == 0 {
+        return Err(Error::Usage("bzip2 level must be between 1 and 9"));
+    }
+
+    if options.extreme {
+        return Err(Error::Usage("bzip2 does not support --extreme"));
+    }
+
+    if options.block_size.is_some() {
+        return Err(Error::Usage("bzip2 block size is selected with -1..-9"));
+    }
+
+    if !options.set_options.is_empty() {
+        return Err(Error::Usage("bzip2 does not support --set"));
+    }
+
+    Ok(Bzip2Options {
+        block_size_100k: options.level.min(9),
+        threads: normalize_threads(options.threads),
+    })
+}
+
 fn build_xz_options(options: &Options) -> Result<XzOptions> {
     match options.algorithm {
+        Algorithm::Bzip2 => return Err(Error::Usage("bzip2 options used for xz")),
         Algorithm::Lzma2 | Algorithm::Xz => {}
     }
 
@@ -231,23 +315,39 @@ fn apply_set_option(options: &mut XzOptions, key: &str, value: &str) -> Result<(
     Ok(())
 }
 
-fn compressed_path(path: &Path) -> PathBuf {
+fn compressed_path(path: &Path, algorithm: Algorithm) -> PathBuf {
     let mut name = path.as_os_str().to_os_string();
-    name.push(".xz");
+    match algorithm {
+        Algorithm::Bzip2 => name.push(".bz2"),
+        Algorithm::Lzma2 | Algorithm::Xz => name.push(".xz"),
+    }
     PathBuf::from(name)
 }
 
-fn decompressed_path(path: &Path) -> Result<PathBuf> {
+fn decompressed_path(path: &Path, algorithm: Algorithm) -> Result<PathBuf> {
     let text = path
         .to_str()
         .ok_or(Error::Usage("path is not valid UTF-8"))?;
 
-    if let Some(base) = text.strip_suffix(".xz") {
-        Ok(PathBuf::from(base))
-    } else if let Some(base) = text.strip_suffix(".txz") {
-        Ok(PathBuf::from(format!("{base}.tar")))
-    } else {
-        Err(Error::Usage("compressed file must end in .xz or .txz"))
+    match algorithm {
+        Algorithm::Bzip2 => {
+            if let Some(base) = text.strip_suffix(".bz2") {
+                Ok(PathBuf::from(base))
+            } else if let Some(base) = text.strip_suffix(".tbz2") {
+                Ok(PathBuf::from(format!("{base}.tar")))
+            } else {
+                Err(Error::Usage("compressed file must end in .bz2 or .tbz2"))
+            }
+        }
+        Algorithm::Lzma2 | Algorithm::Xz => {
+            if let Some(base) = text.strip_suffix(".xz") {
+                Ok(PathBuf::from(base))
+            } else if let Some(base) = text.strip_suffix(".txz") {
+                Ok(PathBuf::from(format!("{base}.tar")))
+            } else {
+                Err(Error::Usage("compressed file must end in .xz or .txz"))
+            }
+        }
     }
 }
 
@@ -371,14 +471,28 @@ fn temporary_path(target: &Path) -> PathBuf {
     PathBuf::from(temporary)
 }
 
-fn print_info(name: &str, info: &xz::StreamInfo) {
-    println!(
-        "{}: streams={} blocks={} compressed={} uncompressed={} check={}",
-        name,
-        info.streams,
-        info.blocks,
-        info.compressed_size,
-        info.uncompressed_size,
-        info.check.name(),
-    );
+fn print_info(name: &str, codec_options: &CodecOptions, input: &[u8]) -> Result<()> {
+    match codec_options {
+        CodecOptions::Bzip2(_) => {
+            let info = bzip2::inspect_stream(input)?;
+            println!(
+                "{}: streams={} blocks={} compressed={} uncompressed={} check=crc32",
+                name, info.streams, info.blocks, info.compressed_size, info.uncompressed_size,
+            );
+        }
+        CodecOptions::Xz(_) => {
+            let info = xz::inspect_stream(input)?;
+            println!(
+                "{}: streams={} blocks={} compressed={} uncompressed={} check={}",
+                name,
+                info.streams,
+                info.blocks,
+                info.compressed_size,
+                info.uncompressed_size,
+                info.check.name(),
+            );
+        }
+    }
+
+    Ok(())
 }

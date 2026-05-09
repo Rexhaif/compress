@@ -27,6 +27,7 @@ pub struct Options {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Algorithm {
+    Bzip2,
     Lzma2,
     Xz,
 }
@@ -92,6 +93,8 @@ impl Parser {
 
             if argument == "xz" {
                 self.algorithm = Algorithm::Xz;
+            } else if argument == "bzip2" || argument == "bz2" {
+                self.algorithm = Algorithm::Bzip2;
             } else if argument == "--" {
                 self.files.extend_from_slice(&self.arguments[self.index..]);
                 self.index = self.arguments.len();
@@ -213,6 +216,7 @@ impl Parser {
 
 fn parse_algorithm(name: &str) -> Result<Algorithm> {
     match name {
+        "bzip2" | "bz2" => Ok(Algorithm::Bzip2),
         "lzma2" => Ok(Algorithm::Lzma2),
         "xz" => Ok(Algorithm::Xz),
         _ => Err(Error::Usage("unknown algorithm")),
@@ -255,7 +259,7 @@ fn parse_u32(value: &str) -> Result<u32> {
 }
 
 fn help_text() -> &'static str {
-    "usage: compress [-a lzma2] [xz] [options] [file...]\n\
+    "usage: compress [-a xz|bzip2] [xz|bzip2] [options] [file...]\n\
      options:\n\
        -z --compress        compress input\n\
        -d --decompress      decompress input\n\

@@ -3,7 +3,18 @@ name = "compress"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "bench-run"
+path = "bench/run.rs"
+
 [dependencies]
+clap = { version = "4.6.1", features = ["derive"] }
 crc32fast = "1.5.0"
 crc64fast = "1.1.0"
+indicatif = "0.18.4"
 rayon = "1.12.0"
+mimalloc = "0.1.48"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

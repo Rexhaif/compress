@@ -26,6 +26,7 @@ pub struct BuiltInAdapter {
 
 #[derive(Clone, Copy, Debug)]
 pub enum BuiltInImplementation {
+    RustBzip2,
     RustXz,
 }
 
@@ -73,9 +74,26 @@ pub struct ModelAdapter {
 
 pub fn lookup(algorithm: Algorithm) -> &'static AlgorithmSpec {
     match algorithm {
+        Algorithm::Bzip2 => &BZIP2,
         Algorithm::Lzma2 | Algorithm::Xz => &XZ_LZMA2,
     }
 }
+
+const BZIP2: AlgorithmSpec = AlgorithmSpec {
+    adapter: AdapterKind::BuiltIn,
+    built_in: Some(BuiltInAdapter {
+        capabilities: AdapterCapabilities {
+            decode: true,
+            encode: true,
+            list: true,
+            test: true,
+        },
+        implementation: BuiltInImplementation::RustBzip2,
+    }),
+    model: None,
+    name: "bzip2",
+    process: None,
+};
 
 const XZ_LZMA2: AlgorithmSpec = AlgorithmSpec {
     adapter: AdapterKind::BuiltIn,

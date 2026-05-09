@@ -1,13 +1,14 @@
 # compress
 
 `compress` is a Rust compression binary with a static algorithm registry shape
-and a from-scratch `.xz`/LZMA2 implementation path.
+and from-scratch `.xz`/LZMA2 and `.bz2` implementation paths.
 
 Current commands:
 
 ```text
 compress -a lzma2 [options] [file...]
 compress xz [options] [file...]
+compress bzip2 [options] [file...]
 ```
 
 Supported options:
@@ -56,6 +57,14 @@ optimal parser and true binary-tree match finder are still future work. The
 decoder implements the `.xz` container, LZMA2 chunks, and raw LZMA range decoding
 for ordinary LZMA2 streams.
 
+The bzip2 path writes standard `.bz2` streams with in-repo RLE, cyclic BWT,
+move-to-front, Huffman coding, and CRC handling. Multi-threaded bzip2
+compression splits input into independent bzip2 blocks, compresses them in
+parallel, and writes one ordered stream compatible with `bzip2` and `pbzip2`.
+The decoder reads ordinary single-stream `.bz2` files and concatenated
+pbzip2-style streams, with independent block decoding dispatched in parallel
+when block markers can be validated.
+
 The core codec implementation is Rust. CRC32 and CRC64 use fast Rust
 implementations; SHA-256 and `none` are implemented in-tree.
 
@@ -69,6 +78,8 @@ compress xz --set mode=optimal -c input > input.xz
 compress xz -dc input.xz > input
 compress xz -t input.xz
 compress xz -l input.xz
+compress bzip2 -9 -T0 -c input > input.bz2
+compress bzip2 -dc input.bz2 > input
 ```
 
 `mode=normal` is the default speed-oriented LZMA parser. `mode=optimal` enables
@@ -82,7 +93,8 @@ decompression removes the input unless `--keep` or `--stdout` is used.
 Benchmark metadata lives under `bench/`. Build the runner with:
 
 ```sh
-rustc bench/run.rs -O -o bench/run
+cargo build --release --bin bench-run
+cp target/release/bench-run bench/run
 ```
 
 Then run:

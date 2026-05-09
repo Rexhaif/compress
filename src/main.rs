@@ -6,6 +6,9 @@ mod registry;
 
 use crate::error::Result;
 
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
     if let Err(error) = run() {
         let exit_code = error.exit_code();
