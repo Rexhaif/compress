@@ -500,7 +500,6 @@ fn validate_options(options: &Bzip2Options) -> Result<()> {
 fn parallel_pool(threads: u32) -> Result<rayon::ThreadPool> {
     rayon::ThreadPoolBuilder::new()
         .num_threads((threads as usize).max(1))
-        .use_current_thread()
         .build()
         .map_err(|error| Error::Message(error.to_string()))
 }
