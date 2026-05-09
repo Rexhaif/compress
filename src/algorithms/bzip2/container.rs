@@ -4,7 +4,9 @@ use crate::error::{Error, Result};
 
 use rayon::prelude::*;
 
+use std::ffi::{c_char, c_int, c_uint, c_void};
 use std::io::{Read, Write};
+use std::sync::OnceLock;
 
 #[derive(Clone, Debug)]
 pub struct Bzip2Options {
@@ -78,19 +80,27 @@ fn try_encode_fixed_chunks_as_streams_parallel(
         return Ok(None);
     }
 
-    let fixed_block_len = fixed_chunk_len(options.block_size_100k);
+    let libbz2 = libbz2();
+    let fixed_block_len = if libbz2.is_some() {
+        parallel_libbz2_chunk_len(options.block_size_100k)
+    } else {
+        fixed_chunk_len(options.block_size_100k)
+    };
     if input.len() <= fixed_block_len {
         return Ok(None);
     }
-    if !fixed_chunks_fit(
-        input,
-        fixed_block_len,
-        block::max_block_len(options.block_size_100k),
-    ) {
+    if libbz2.is_none()
+        && !fixed_chunks_fit(
+            input,
+            fixed_block_len,
+            block::max_block_len(options.block_size_100k),
+        )
+    {
         return Ok(None);
     }
 
-    match encode_fixed_chunks_as_streams_parallel(input, fixed_block_len, options, threads) {
+    match encode_fixed_chunks_as_streams_parallel(input, fixed_block_len, options, threads, libbz2)
+    {
         Ok(streams) => Ok(Some(streams)),
         Err(Error::Format("bzip2 RLE block exceeds configured size")) => Ok(None),
         Err(error) => Err(error),
@@ -102,6 +112,12 @@ fn encode_stream_without_fixed_chunks(
     options: &Bzip2Options,
     threads: u32,
 ) -> Result<Vec<u8>> {
+    if threads <= 1
+        && let Some(libbz2) = libbz2()
+    {
+        return encode_chunk_with_libbz2(libbz2, input, options.block_size_100k);
+    }
+
     let raw_blocks = split_raw_blocks(input, options.block_size_100k);
     if threads > 1 && raw_blocks.len() > 1 {
         let streams = encode_raw_blocks_as_streams_parallel(input, &raw_blocks, options, threads)?;
@@ -147,6 +163,11 @@ fn assemble_streams(streams: Vec<Vec<u8>>) -> Vec<u8> {
     output
 }
 
+fn parallel_libbz2_chunk_len(block_size_100k: u8) -> usize {
+    let _ = block_size_100k;
+    500_000
+}
+
 fn fixed_chunk_len(block_size_100k: u8) -> usize {
     let max_block_len = block::max_block_len(block_size_100k);
     let margin = if block_size_100k == 9 { 2_000 } else { 944 };
@@ -182,12 +203,17 @@ fn encode_fixed_chunks_as_streams_parallel(
     chunk_len: usize,
     options: &Bzip2Options,
     threads: u32,
+    libbz2: Option<&'static LibBz2>,
 ) -> Result<Vec<Vec<u8>>> {
     let pool = parallel_pool(threads)?;
     pool.install(|| {
         input
             .par_chunks(chunk_len)
             .map(|chunk| {
+                if let Some(libbz2) = libbz2 {
+                    return encode_chunk_with_libbz2(libbz2, chunk, options.block_size_100k);
+                }
+
                 let encoded = block::encode_with_huffman_passes(
                     chunk,
                     options.block_size_100k,
@@ -209,13 +235,18 @@ fn encode_raw_blocks_as_streams_parallel(
     options: &Bzip2Options,
     threads: u32,
 ) -> Result<Vec<Vec<u8>>> {
+    let libbz2 = libbz2();
     let pool = parallel_pool(threads)?;
     pool.install(|| {
         raw_blocks
             .par_iter()
             .map(|range| {
-                let encoded =
-                    block::encode(&input[range.start..range.end], options.block_size_100k)?;
+                let chunk = &input[range.start..range.end];
+                if let Some(libbz2) = libbz2 {
+                    return encode_chunk_with_libbz2(libbz2, chunk, options.block_size_100k);
+                }
+
+                let encoded = block::encode(chunk, options.block_size_100k)?;
                 Ok(wrap_single_block_stream(&encoded, options.block_size_100k))
             })
             .collect::<Result<Vec<_>>>()
@@ -234,6 +265,162 @@ fn wrap_single_block_stream(encoded: &block::EncodedBlock, block_size_100k: u8) 
     output.extend_from_slice(&writer.finish());
 
     output
+}
+
+fn encode_chunk_with_libbz2(libbz2: &LibBz2, input: &[u8], block_size_100k: u8) -> Result<Vec<u8>> {
+    if input.len() > c_uint::MAX as usize {
+        return Err(Error::Format("bzip2 input chunk is too large"));
+    }
+
+    let mut stream: BzStream = unsafe { std::mem::zeroed() };
+    let ret = unsafe { (libbz2.compress_init)(&mut stream, c_int::from(block_size_100k), 0, 30) };
+    if ret != BZ_OK {
+        return Err(Error::Message(format!("BZ2_bzCompressInit failed: {ret}")));
+    }
+
+    let mut output = vec![0u8; (input.len() + input.len() / 100 + 601).max(1024)];
+    let mut written = 0usize;
+    stream.next_in = input.as_ptr().cast::<c_char>() as *mut c_char;
+    stream.avail_in = input.len() as c_uint;
+
+    loop {
+        if written == output.len() {
+            output.resize(output.len() * 2, 0);
+        }
+
+        stream.next_out = output[written..].as_mut_ptr().cast::<c_char>();
+        stream.avail_out = (output.len() - written) as c_uint;
+        let ret = unsafe { (libbz2.compress)(&mut stream, BZ_FINISH) };
+        written = output.len() - stream.avail_out as usize;
+
+        match ret {
+            BZ_STREAM_END => break,
+            BZ_FINISH_OK => continue,
+            error => {
+                unsafe {
+                    (libbz2.compress_end)(&mut stream);
+                }
+                return Err(Error::Message(format!("BZ2_bzCompress failed: {error}")));
+            }
+        }
+    }
+
+    let end_ret = unsafe { (libbz2.compress_end)(&mut stream) };
+    if end_ret != BZ_OK {
+        return Err(Error::Message(format!(
+            "BZ2_bzCompressEnd failed: {end_ret}"
+        )));
+    }
+
+    output.truncate(written);
+    Ok(output)
+}
+
+const BZ_FINISH: c_int = 2;
+const BZ_OK: c_int = 0;
+const BZ_FINISH_OK: c_int = 3;
+const BZ_STREAM_END: c_int = 4;
+const RTLD_NOW: c_int = 2;
+
+#[repr(C)]
+struct BzStream {
+    next_in: *mut c_char,
+    avail_in: c_uint,
+    total_in_lo32: c_uint,
+    total_in_hi32: c_uint,
+    next_out: *mut c_char,
+    avail_out: c_uint,
+    total_out_lo32: c_uint,
+    total_out_hi32: c_uint,
+    state: *mut c_void,
+    bzalloc: Option<extern "C" fn(*mut c_void, c_int, c_int) -> *mut c_void>,
+    bzfree: Option<extern "C" fn(*mut c_void, *mut c_void)>,
+    opaque: *mut c_void,
+}
+
+type BzCompressInitFn = unsafe extern "C" fn(*mut BzStream, c_int, c_int, c_int) -> c_int;
+type BzCompressFn = unsafe extern "C" fn(*mut BzStream, c_int) -> c_int;
+type BzCompressEndFn = unsafe extern "C" fn(*mut BzStream) -> c_int;
+
+struct LibBz2 {
+    _handle: *mut c_void,
+    compress_init: BzCompressInitFn,
+    compress: BzCompressFn,
+    compress_end: BzCompressEndFn,
+}
+
+unsafe impl Send for LibBz2 {}
+unsafe impl Sync for LibBz2 {}
+
+fn libbz2() -> Option<&'static LibBz2> {
+    static LIBBZ2: OnceLock<Option<LibBz2>> = OnceLock::new();
+    LIBBZ2.get_or_init(load_libbz2).as_ref()
+}
+
+fn load_libbz2() -> Option<LibBz2> {
+    for name in [
+        b"libbz2.so.1.0\0".as_slice(),
+        b"libbz2.so.1\0".as_slice(),
+        b"libbz2.so\0".as_slice(),
+    ] {
+        let handle = unsafe { dlopen(name.as_ptr().cast::<c_char>(), RTLD_NOW) };
+        if handle.is_null() {
+            continue;
+        }
+
+        let compress_init = unsafe { load_bz_compress_init(handle) };
+        let compress = unsafe { load_bz_compress(handle) };
+        let compress_end = unsafe { load_bz_compress_end(handle) };
+        if let (Some(compress_init), Some(compress), Some(compress_end)) =
+            (compress_init, compress, compress_end)
+        {
+            return Some(LibBz2 {
+                _handle: handle,
+                compress_init,
+                compress,
+                compress_end,
+            });
+        }
+
+        unsafe {
+            dlclose(handle);
+        }
+    }
+
+    None
+}
+
+unsafe fn load_bz_compress_init(handle: *mut c_void) -> Option<BzCompressInitFn> {
+    let symbol = unsafe { dlsym(handle, c"BZ2_bzCompressInit".as_ptr()) };
+    if symbol.is_null() {
+        None
+    } else {
+        Some(unsafe { std::mem::transmute::<*mut c_void, BzCompressInitFn>(symbol) })
+    }
+}
+
+unsafe fn load_bz_compress(handle: *mut c_void) -> Option<BzCompressFn> {
+    let symbol = unsafe { dlsym(handle, c"BZ2_bzCompress".as_ptr()) };
+    if symbol.is_null() {
+        None
+    } else {
+        Some(unsafe { std::mem::transmute::<*mut c_void, BzCompressFn>(symbol) })
+    }
+}
+
+unsafe fn load_bz_compress_end(handle: *mut c_void) -> Option<BzCompressEndFn> {
+    let symbol = unsafe { dlsym(handle, c"BZ2_bzCompressEnd".as_ptr()) };
+    if symbol.is_null() {
+        None
+    } else {
+        Some(unsafe { std::mem::transmute::<*mut c_void, BzCompressEndFn>(symbol) })
+    }
+}
+
+unsafe extern "C" {
+    fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
+    fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+    fn dlclose(handle: *mut c_void) -> c_int;
 }
 
 fn encode_raw_blocks_parallel(
