@@ -121,7 +121,7 @@ impl BitWriter {
 
 pub struct BitReader<'a> {
     data: &'a [u8],
-    bit_pos: u64,
+    bit_pos: usize,
 }
 
 impl<'a> BitReader<'a> {
@@ -130,15 +130,18 @@ impl<'a> BitReader<'a> {
     }
 
     pub fn new_at(data: &'a [u8], bit_pos: u64) -> BitReader<'a> {
-        BitReader { data, bit_pos }
+        BitReader {
+            data,
+            bit_pos: bit_pos as usize,
+        }
     }
 
     pub fn read_bit(&mut self) -> Result<bool> {
-        if self.bit_pos >= (self.data.len() as u64) * 8 {
+        if self.bit_pos >= self.data.len() * 8 {
             return Err(Error::Format("truncated bzip2 bitstream"));
         }
 
-        let byte = self.data[(self.bit_pos / 8) as usize];
+        let byte = self.data[self.bit_pos / 8];
         let shift = 7 - (self.bit_pos % 8);
         self.bit_pos += 1;
 
@@ -146,18 +149,52 @@ impl<'a> BitReader<'a> {
     }
 
     pub fn read_bits(&mut self, bits: u8) -> Result<u32> {
+        if bits == 0 {
+            return Ok(0);
+        }
+        if self.bit_pos + usize::from(bits) > self.data.len() * 8 {
+            return Err(Error::Format("truncated bzip2 bitstream"));
+        }
+
         let mut value = 0u32;
-        for _ in 0..bits {
-            value = (value << 1) | u32::from(self.read_bit()?);
+        let mut remaining = bits;
+
+        while remaining > 0 {
+            let byte = self.data[self.bit_pos / 8];
+            let bit_offset = (self.bit_pos % 8) as u8;
+            let available = 8 - bit_offset;
+            let take = remaining.min(available);
+            let shift = available - take;
+            let mask = (1u16 << take) - 1;
+            value = (value << take) | u32::from((byte >> shift) & mask as u8);
+            self.bit_pos += usize::from(take);
+            remaining -= take;
         }
 
         Ok(value)
     }
 
     pub fn read_bits_u64(&mut self, bits: u8) -> Result<u64> {
+        if bits == 0 {
+            return Ok(0);
+        }
+        if self.bit_pos + usize::from(bits) > self.data.len() * 8 {
+            return Err(Error::Format("truncated bzip2 bitstream"));
+        }
+
         let mut value = 0u64;
-        for _ in 0..bits {
-            value = (value << 1) | u64::from(self.read_bit()?);
+        let mut remaining = bits;
+
+        while remaining > 0 {
+            let byte = self.data[self.bit_pos / 8];
+            let bit_offset = (self.bit_pos % 8) as u8;
+            let available = 8 - bit_offset;
+            let take = remaining.min(available);
+            let shift = available - take;
+            let mask = (1u16 << take) - 1;
+            value = (value << take) | u64::from((byte >> shift) & mask as u8);
+            self.bit_pos += usize::from(take);
+            remaining -= take;
         }
 
         Ok(value)
@@ -171,6 +208,6 @@ impl<'a> BitReader<'a> {
     }
 
     pub fn consumed_bytes(&self) -> usize {
-        self.bit_pos.div_ceil(8) as usize
+        self.bit_pos.div_ceil(8)
     }
 }
