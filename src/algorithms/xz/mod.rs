@@ -104,31 +104,60 @@ pub fn encode_reader_to_writer<R: Read, W: Write>(
 
 pub fn decode_stream(input: &[u8]) -> Result<Vec<u8>> {
     let stream = parse_single_stream(input)?;
-    let mut output = Vec::new();
+    let mut parsed_blocks = Vec::with_capacity(stream.records.len());
     let mut block_offset = 12usize;
 
     for record in &stream.records {
         let block = parse_block(input, block_offset, *record, stream.check)?;
-        let block_output = lzma2::decode(block.compressed_data, block.dict_size)?;
-
-        if block_output.len() as u64 != record.uncompressed_size {
-            return Err(Error::Format("xz block uncompressed size mismatch"));
-        }
-
-        let expected_check = checks::check_bytes(stream.check, &block_output);
-        if expected_check != block.check_data {
-            return Err(Error::Format("xz block integrity check mismatch"));
-        }
-
-        output.extend_from_slice(&block_output);
         block_offset = block.next_offset;
+        parsed_blocks.push(block);
     }
 
     if block_offset != stream.index_offset {
         return Err(Error::Format("xz index offset mismatch"));
     }
 
+    let decoded_blocks = if parsed_blocks.len() > 1 {
+        parsed_blocks
+            .par_iter()
+            .zip(stream.records.par_iter())
+            .map(|(block, record)| decode_parsed_block(block, *record, stream.check))
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        parsed_blocks
+            .iter()
+            .zip(stream.records.iter())
+            .map(|(block, record)| decode_parsed_block(block, *record, stream.check))
+            .collect::<Result<Vec<_>>>()?
+    };
+    let total_size: usize = decoded_blocks.iter().map(Vec::len).sum();
+    let mut output = Vec::new();
+    output.reserve(total_size);
+
+    for block_output in decoded_blocks {
+        output.extend_from_slice(&block_output);
+    }
+
     Ok(output)
+}
+
+fn decode_parsed_block(
+    block: &ParsedBlock<'_>,
+    record: IndexRecord,
+    check: CheckType,
+) -> Result<Vec<u8>> {
+    let block_output = lzma2::decode(block.compressed_data, block.dict_size)?;
+
+    if block_output.len() as u64 != record.uncompressed_size {
+        return Err(Error::Format("xz block uncompressed size mismatch"));
+    }
+
+    let expected_check = checks::check_bytes(check, &block_output);
+    if expected_check != block.check_data {
+        return Err(Error::Format("xz block integrity check mismatch"));
+    }
+
+    Ok(block_output)
 }
 
 pub fn inspect_stream(input: &[u8]) -> Result<StreamInfo> {
