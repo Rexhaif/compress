@@ -1711,13 +1711,30 @@ impl LzmaDecoder {
             return Err(Error::Format("LZMA distance exceeds dictionary"));
         }
 
-        for _ in 0..length {
-            if output.len() >= target {
-                return Err(Error::Format("LZMA match exceeds chunk size"));
-            }
+        let distance = distance as usize + 1;
+        let length = length as usize;
+        let output_len = output.len();
+        let Some(match_end) = output_len.checked_add(length) else {
+            return Err(Error::Format("LZMA output size overflow"));
+        };
 
-            let byte = self.dictionary_byte(output, distance, dictionary_start)?;
-            output.push(byte);
+        if match_end > target {
+            return Err(Error::Format("LZMA match exceeds chunk size"));
+        }
+
+        if output_len < dictionary_start + distance {
+            return Err(Error::Format("LZMA match before dictionary"));
+        }
+
+        let start = output_len - distance;
+        if distance == 1 {
+            let byte = output[start];
+            output.resize(match_end, byte);
+            return Ok(());
+        }
+
+        for index in 0..length {
+            output.push(output[start + index]);
         }
 
         Ok(())
