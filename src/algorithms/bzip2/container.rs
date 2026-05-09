@@ -165,7 +165,7 @@ fn assemble_streams(streams: Vec<Vec<u8>>) -> Vec<u8> {
 
 fn parallel_libbz2_chunk_len(block_size_100k: u8) -> usize {
     let _ = block_size_100k;
-    500_000
+    470_000
 }
 
 fn fixed_chunk_len(block_size_100k: u8) -> usize {
