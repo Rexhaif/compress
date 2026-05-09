@@ -234,6 +234,13 @@ pub fn decode_stream_with_threads(input: &[u8], threads: u32) -> Result<Vec<u8>>
 }
 
 fn decode_stream_parallel(input: &[u8], threads: u32) -> Result<Vec<u8>> {
+    if let Ok(frames) = split_stream_frames_by_header(input)
+        && frames.len() > 1
+        && let Ok(output) = decode_stream_frames_parallel(input, &frames, threads)
+    {
+        return Ok(output);
+    }
+
     let frames = split_stream_frames(input)?;
     let pool = parallel_pool(threads)?;
 
@@ -241,10 +248,34 @@ fn decode_stream_parallel(input: &[u8], threads: u32) -> Result<Vec<u8>> {
         return decode_one_stream_parallel(input, &pool).map(|decoded| decoded.bytes);
     }
 
+    decode_stream_frames_with_pool(input, &frames, &pool)
+}
+
+fn decode_stream_frames_parallel(
+    input: &[u8],
+    frames: &[StreamFrame],
+    threads: u32,
+) -> Result<Vec<u8>> {
+    let pool = parallel_pool(threads)?;
+    decode_stream_frames_with_pool(input, frames, &pool)
+}
+
+fn decode_stream_frames_with_pool(
+    input: &[u8],
+    frames: &[StreamFrame],
+    pool: &rayon::ThreadPool,
+) -> Result<Vec<u8>> {
     let decoded_streams = pool.install(|| {
         frames
             .par_iter()
-            .map(|frame| decode_one_stream_serial(&input[frame.start..frame.end]))
+            .map(|frame| {
+                let slice = &input[frame.start..frame.end];
+                let decoded = decode_one_stream_serial(slice)?;
+                if decoded.consumed != slice.len() {
+                    return Err(Error::Format("trailing data after bzip2 stream"));
+                }
+                Ok(decoded)
+            })
             .collect::<Result<Vec<_>>>()
     })?;
     let total_size: usize = decoded_streams
@@ -301,6 +332,37 @@ fn split_stream_frames(input: &[u8]) -> Result<Vec<StreamFrame>> {
     if frames.is_empty() {
         return Err(Error::Format("empty bzip2 input"));
     }
+
+    Ok(frames)
+}
+
+fn split_stream_frames_by_header(input: &[u8]) -> Result<Vec<StreamFrame>> {
+    if input.len() < 4 || input[0..3] != *b"BZh" || !(b'1'..=b'9').contains(&input[3]) {
+        return Err(Error::Format("bad bzip2 stream header magic"));
+    }
+
+    let mut starts = vec![0usize];
+    let mut index = 4usize;
+    while index + 4 <= input.len() {
+        if input[index..index + 3] == *b"BZh" && (b'1'..=b'9').contains(&input[index + 3]) {
+            starts.push(index);
+            index += 4;
+        } else {
+            index += 1;
+        }
+    }
+
+    let mut frames = Vec::with_capacity(starts.len());
+    for window in starts.windows(2) {
+        frames.push(StreamFrame {
+            start: window[0],
+            end: window[1],
+        });
+    }
+    frames.push(StreamFrame {
+        start: *starts.last().expect("bzip2 stream starts is not empty"),
+        end: input.len(),
+    });
 
     Ok(frames)
 }
