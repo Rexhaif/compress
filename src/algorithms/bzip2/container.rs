@@ -221,6 +221,33 @@ fn encode_raw_blocks_parallel(
 }
 
 pub fn decode_stream(input: &[u8]) -> Result<Vec<u8>> {
+    decode_stream_parallel(input).or_else(|_| decode_stream_serial(input))
+}
+
+fn decode_stream_parallel(input: &[u8]) -> Result<Vec<u8>> {
+    let frames = split_stream_frames(input)?;
+    if frames.len() <= 1 {
+        return decode_stream_serial(input);
+    }
+
+    let decoded_streams = frames
+        .par_iter()
+        .map(|frame| decode_one_stream_serial(&input[frame.start..frame.end]))
+        .collect::<Result<Vec<_>>>()?;
+    let total_size: usize = decoded_streams
+        .iter()
+        .map(|stream| stream.bytes.len())
+        .sum();
+    let mut output = Vec::with_capacity(total_size);
+
+    for decoded in decoded_streams {
+        output.extend_from_slice(&decoded.bytes);
+    }
+
+    Ok(output)
+}
+
+fn decode_stream_serial(input: &[u8]) -> Result<Vec<u8>> {
     let mut offset = 0usize;
     let mut output = Vec::new();
     let mut saw_stream = false;
@@ -237,6 +264,56 @@ pub fn decode_stream(input: &[u8]) -> Result<Vec<u8>> {
     }
 
     Ok(output)
+}
+
+#[derive(Clone, Copy)]
+struct StreamFrame {
+    start: usize,
+    end: usize,
+}
+
+fn split_stream_frames(input: &[u8]) -> Result<Vec<StreamFrame>> {
+    let mut frames = Vec::new();
+    let mut offset = 0usize;
+
+    while offset < input.len() {
+        let consumed = stream_consumed_fast(&input[offset..])?;
+        frames.push(StreamFrame {
+            start: offset,
+            end: offset + consumed,
+        });
+        offset += consumed;
+    }
+
+    if frames.is_empty() {
+        return Err(Error::Format("empty bzip2 input"));
+    }
+
+    Ok(frames)
+}
+
+fn stream_consumed_fast(input: &[u8]) -> Result<usize> {
+    if input.len() < 4 {
+        return Err(Error::Format("bzip2 stream is too short"));
+    }
+    if input[0..3] != *b"BZh" {
+        return Err(Error::Format("bad bzip2 stream header magic"));
+    }
+
+    let block_size_100k = input[3]
+        .checked_sub(b'0')
+        .ok_or(Error::Format("bad bzip2 block size marker"))?;
+    if !(1..=9).contains(&block_size_100k) {
+        return Err(Error::Format("bad bzip2 block size marker"));
+    }
+
+    let body = &input[4..];
+    let eos_marker = find_eos_marker(body)?;
+    let mut reader = BitReader::new_at(body, eos_marker.bit_pos + 48);
+    let _expected_crc = reader.read_bits(32)?;
+    reader.align_to_byte();
+
+    Ok(4 + reader.consumed_bytes())
 }
 
 pub fn inspect_stream(input: &[u8]) -> Result<StreamInfo> {
@@ -292,20 +369,7 @@ fn decode_one_stream_parallel(input: &[u8]) -> Result<DecodedStream> {
     }
 
     let body = &input[4..];
-    let markers = find_markers(body);
-    let eos_index = markers
-        .iter()
-        .position(|marker| marker.magic == block::EOS_MAGIC)
-        .ok_or(Error::Format("missing bzip2 end-of-stream marker"))?;
-    let eos_marker = markers[eos_index];
-    let block_markers = &markers[..eos_index];
-
-    if block_markers
-        .iter()
-        .any(|marker| marker.magic != block::BLOCK_MAGIC)
-    {
-        return Err(Error::Format("unexpected bzip2 marker before EOS"));
-    }
+    let (block_markers, eos_marker) = find_markers_until_eos(body)?;
 
     let decoded_blocks = block_markers
         .par_iter()
@@ -388,10 +452,9 @@ fn decode_one_stream_serial(input: &[u8]) -> Result<DecodedStream> {
 #[derive(Clone, Copy)]
 struct Marker {
     bit_pos: u64,
-    magic: u64,
 }
 
-fn find_markers(data: &[u8]) -> Vec<Marker> {
+fn find_markers_until_eos(data: &[u8]) -> Result<(Vec<Marker>, Marker)> {
     let mut markers = Vec::new();
     let total_bits = (data.len() as u64) * 8;
     let mut window = 0u64;
@@ -403,15 +466,42 @@ fn find_markers(data: &[u8]) -> Vec<Marker> {
             continue;
         }
 
-        if window == block::BLOCK_MAGIC || window == block::EOS_MAGIC {
+        if window == block::BLOCK_MAGIC {
             markers.push(Marker {
                 bit_pos: bit_pos + 1 - 48,
-                magic: window,
+            });
+        } else if window == block::EOS_MAGIC {
+            return Ok((
+                markers,
+                Marker {
+                    bit_pos: bit_pos + 1 - 48,
+                },
+            ));
+        }
+    }
+
+    Err(Error::Format("missing bzip2 end-of-stream marker"))
+}
+
+fn find_eos_marker(data: &[u8]) -> Result<Marker> {
+    let total_bits = (data.len() as u64) * 8;
+    let mut window = 0u64;
+    let mask = (1u64 << 48) - 1;
+
+    for bit_pos in 0..total_bits {
+        window = ((window << 1) | u64::from(bit_at(data, bit_pos))) & mask;
+        if bit_pos < 47 {
+            continue;
+        }
+
+        if window == block::EOS_MAGIC {
+            return Ok(Marker {
+                bit_pos: bit_pos + 1 - 48,
             });
         }
     }
 
-    markers
+    Err(Error::Format("missing bzip2 end-of-stream marker"))
 }
 
 fn bit_at(data: &[u8], bit_pos: u64) -> bool {
