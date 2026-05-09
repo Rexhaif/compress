@@ -220,20 +220,33 @@ fn encode_raw_blocks_parallel(
     })
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn decode_stream(input: &[u8]) -> Result<Vec<u8>> {
-    decode_stream_parallel(input).or_else(|_| decode_stream_serial(input))
+    decode_stream_with_threads(input, available_threads())
 }
 
-fn decode_stream_parallel(input: &[u8]) -> Result<Vec<u8>> {
-    let frames = split_stream_frames(input)?;
-    if frames.len() <= 1 {
+pub fn decode_stream_with_threads(input: &[u8], threads: u32) -> Result<Vec<u8>> {
+    if threads <= 1 {
         return decode_stream_serial(input);
     }
 
-    let decoded_streams = frames
-        .par_iter()
-        .map(|frame| decode_one_stream_serial(&input[frame.start..frame.end]))
-        .collect::<Result<Vec<_>>>()?;
+    decode_stream_parallel(input, threads).or_else(|_| decode_stream_serial(input))
+}
+
+fn decode_stream_parallel(input: &[u8], threads: u32) -> Result<Vec<u8>> {
+    let frames = split_stream_frames(input)?;
+    let pool = parallel_pool(threads)?;
+
+    if frames.len() <= 1 {
+        return decode_one_stream_parallel(input, &pool).map(|decoded| decoded.bytes);
+    }
+
+    let decoded_streams = pool.install(|| {
+        frames
+            .par_iter()
+            .map(|frame| decode_one_stream_serial(&input[frame.start..frame.end]))
+            .collect::<Result<Vec<_>>>()
+    })?;
     let total_size: usize = decoded_streams
         .iter()
         .map(|stream| stream.bytes.len())
@@ -253,7 +266,7 @@ fn decode_stream_serial(input: &[u8]) -> Result<Vec<u8>> {
     let mut saw_stream = false;
 
     while offset < input.len() {
-        let decoded = decode_one_stream(&input[offset..])?;
+        let decoded = decode_one_stream_serial(&input[offset..])?;
         output.extend_from_slice(&decoded.bytes);
         offset += decoded.consumed;
         saw_stream = true;
@@ -350,10 +363,16 @@ struct DecodedStream {
 }
 
 fn decode_one_stream(input: &[u8]) -> Result<DecodedStream> {
-    decode_one_stream_parallel(input).or_else(|_| decode_one_stream_serial(input))
+    let threads = available_threads();
+    if threads <= 1 {
+        return decode_one_stream_serial(input);
+    }
+
+    let pool = parallel_pool(threads)?;
+    decode_one_stream_parallel(input, &pool).or_else(|_| decode_one_stream_serial(input))
 }
 
-fn decode_one_stream_parallel(input: &[u8]) -> Result<DecodedStream> {
+fn decode_one_stream_parallel(input: &[u8], pool: &rayon::ThreadPool) -> Result<DecodedStream> {
     if input.len() < 4 {
         return Err(Error::Format("bzip2 stream is too short"));
     }
@@ -371,13 +390,15 @@ fn decode_one_stream_parallel(input: &[u8]) -> Result<DecodedStream> {
     let body = &input[4..];
     let (block_markers, eos_marker) = find_markers_until_eos(body)?;
 
-    let decoded_blocks = block_markers
-        .par_iter()
-        .map(|marker| {
-            let mut reader = BitReader::new_at(body, marker.bit_pos + 48);
-            block::decode_after_magic(&mut reader, block_size_100k)
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let decoded_blocks = pool.install(|| {
+        block_markers
+            .par_iter()
+            .map(|marker| {
+                let mut reader = BitReader::new_at(body, marker.bit_pos + 48);
+                block::decode_after_magic(&mut reader, block_size_100k)
+            })
+            .collect::<Result<Vec<_>>>()
+    })?;
 
     let mut output = Vec::new();
     let mut combined_crc = 0u32;
@@ -592,6 +613,13 @@ fn parallel_pool(threads: u32) -> Result<rayon::ThreadPool> {
         .num_threads((threads as usize).max(1))
         .build()
         .map_err(|error| Error::Message(error.to_string()))
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn available_threads() -> u32 {
+    std::thread::available_parallelism()
+        .map(|count| count.get() as u32)
+        .unwrap_or(1)
 }
 
 #[cfg(test)]

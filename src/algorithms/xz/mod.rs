@@ -102,7 +102,12 @@ pub fn encode_reader_to_writer<R: Read, W: Write>(
     Ok(())
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn decode_stream(input: &[u8]) -> Result<Vec<u8>> {
+    decode_stream_with_threads(input, available_threads())
+}
+
+pub fn decode_stream_with_threads(input: &[u8], threads: u32) -> Result<Vec<u8>> {
     let stream = parse_single_stream(input)?;
     let mut parsed_blocks = Vec::with_capacity(stream.records.len());
     let mut block_offset = 12usize;
@@ -117,12 +122,14 @@ pub fn decode_stream(input: &[u8]) -> Result<Vec<u8>> {
         return Err(Error::Format("xz index offset mismatch"));
     }
 
-    let decoded_blocks = if parsed_blocks.len() > 1 {
-        parsed_blocks
-            .par_iter()
-            .zip(stream.records.par_iter())
-            .map(|(block, record)| decode_parsed_block(block, *record, stream.check))
-            .collect::<Result<Vec<_>>>()?
+    let decoded_blocks = if threads > 1 && parsed_blocks.len() > 1 {
+        parallel_pool(threads)?.install(|| {
+            parsed_blocks
+                .par_iter()
+                .zip(stream.records.par_iter())
+                .map(|(block, record)| decode_parsed_block(block, *record, stream.check))
+                .collect::<Result<Vec<_>>>()
+        })?
     } else {
         parsed_blocks
             .iter()
@@ -139,6 +146,13 @@ pub fn decode_stream(input: &[u8]) -> Result<Vec<u8>> {
     }
 
     Ok(output)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn available_threads() -> u32 {
+    std::thread::available_parallelism()
+        .map(|count| count.get() as u32)
+        .unwrap_or(1)
 }
 
 fn decode_parsed_block(

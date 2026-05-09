@@ -226,8 +226,8 @@ fn file_len_hint(file: &fs::File) -> usize {
 
 fn decode_stream(codec_options: &CodecOptions, input: &[u8]) -> Result<Vec<u8>> {
     match codec_options {
-        CodecOptions::Bzip2(_) => bzip2::decode_stream(input),
-        CodecOptions::Xz(_) => xz::decode_stream(input),
+        CodecOptions::Bzip2(options) => bzip2::decode_stream_with_threads(input, options.threads),
+        CodecOptions::Xz(options) => xz::decode_stream_with_threads(input, options.threads),
     }
 }
 

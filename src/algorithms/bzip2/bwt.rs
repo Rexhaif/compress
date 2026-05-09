@@ -730,18 +730,18 @@ pub fn inverse(last_column: &[u8], primary_index: usize) -> Result<Vec<u8>> {
     }
 
     let mut seen = [0usize; 256];
-    let mut next = vec![0usize; n];
+    let mut next = vec![0u32; n];
     for (index, &byte) in last_column.iter().enumerate() {
         let byte_index = usize::from(byte);
         let slot = starts[byte_index] + seen[byte_index];
         seen[byte_index] += 1;
-        next[slot] = index;
+        next[slot] = index as u32;
     }
 
     let mut output = Vec::with_capacity(n);
     let mut position = primary_index;
     for _ in 0..n {
-        position = next[position];
+        position = next[position] as usize;
         output.push(last_column[position]);
     }
 

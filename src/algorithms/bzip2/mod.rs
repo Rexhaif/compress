@@ -13,6 +13,6 @@ mod huffman;
 mod mtf;
 
 pub use container::{
-    Bzip2Options, decode_stream, encode_reader_to_writer, encode_reader_to_writer_with_capacity,
-    inspect_stream,
+    Bzip2Options, decode_stream_with_threads, encode_reader_to_writer,
+    encode_reader_to_writer_with_capacity, inspect_stream,
 };
