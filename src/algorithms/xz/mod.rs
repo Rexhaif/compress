@@ -966,6 +966,7 @@ mod tests {
     };
     use crate::algorithms::checks::CheckType;
     use crate::algorithms::lzma::{CompressionMode, MatchFinderKind};
+    use std::process::Command;
 
     fn test_options(block_size: u64) -> XzOptions {
         XzOptions {
@@ -1043,24 +1044,34 @@ mod tests {
     #[test]
     fn uncompressed_then_compressed_lzma2_round_trip() {
         let options = test_options(512 * 1024);
-        let mut input = Vec::new();
-        let mut state = 0xCAFE_BABEu32;
-
-        for _ in 0..96 * 1024 {
-            state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-            input.push((state >> 24) as u8);
-        }
-
-        for index in 0..8192 {
-            input.extend_from_slice(b"compressible tail alpha beta gamma ");
-            input.extend_from_slice(index.to_string().as_bytes());
-            input.push(b'\n');
-        }
+        let input = uncompressed_then_compressed_input();
 
         let encoded = encode_stream(&input, &options).unwrap();
         let decoded = decode_stream(&encoded).unwrap();
 
         assert_eq!(decoded, input);
+    }
+
+    #[test]
+    fn stock_xz_reads_uncompressed_then_compressed_output_when_available() {
+        if !command_exists("xz") {
+            return;
+        }
+
+        let options = test_options(512 * 1024);
+        let input = uncompressed_then_compressed_input();
+        let encoded = encode_stream(&input, &options).unwrap();
+        let path = temp_path("ours", "xz");
+        std::fs::write(&path, encoded).unwrap();
+
+        let output = Command::new("xz")
+            .args(["-dc", path.to_str().unwrap()])
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout, input);
     }
 
     #[test]
@@ -1123,5 +1134,38 @@ mod tests {
         assert_eq!(info.blocks, 1);
         assert_eq!(decoded, input);
         assert!(encoded.len() < input.len());
+    }
+
+    fn uncompressed_then_compressed_input() -> Vec<u8> {
+        let mut input = Vec::new();
+        let mut state = 0xCAFE_BABEu32;
+
+        for _ in 0..96 * 1024 {
+            state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            input.push((state >> 24) as u8);
+        }
+
+        for index in 0..8192 {
+            input.extend_from_slice(b"compressible tail alpha beta gamma ");
+            input.extend_from_slice(index.to_string().as_bytes());
+            input.push(b'\n');
+        }
+
+        input
+    }
+
+    fn command_exists(command: &str) -> bool {
+        Command::new("sh")
+            .args(["-c", &format!("command -v {command} >/dev/null 2>&1")])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    fn temp_path(label: &str, extension: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "compress-xz-test-{}-{label}.{extension}",
+            std::process::id()
+        ))
     }
 }

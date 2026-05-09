@@ -326,8 +326,6 @@ fn append_uncompressed_packets(
         state.dictionary_reset_done = true;
         offset = chunk_end;
     }
-
-    state.dictionary_reset_done = false;
 }
 
 fn uncompressed_packet(data: &[u8], reset_dictionary: bool) -> Vec<u8> {

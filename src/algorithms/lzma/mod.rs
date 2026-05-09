@@ -1018,7 +1018,7 @@ impl LzmaEncoder {
     ) -> Result<()> {
         self.debug_validate_decision(input, position, decision);
 
-        let pos_state = (position as u32) & ((1 << self.properties.pb) - 1);
+        let pos_state = self.pos_state(position);
         let state = self.state as usize;
         let match_index = (state << NUM_POS_BITS_MAX) + pos_state as usize;
 
@@ -1077,7 +1077,7 @@ impl LzmaEncoder {
     ) -> Result<()> {
         range.encode_bit(&mut self.is_match, match_index, 0);
 
-        let previous = if position == 0 {
+        let previous = if position == self.dictionary_start {
             0
         } else {
             input[position - 1]
@@ -1254,14 +1254,15 @@ impl LzmaEncoder {
 
     fn literal_context(&self, position: usize, previous: u8) -> usize {
         let lp_mask = (1usize << self.properties.lp) - 1;
-        let position_bits = (position & lp_mask) << self.properties.lc;
+        let relative_position = position - self.dictionary_start;
+        let position_bits = (relative_position & lp_mask) << self.properties.lc;
         let literal_bits = usize::from(previous >> (8 - self.properties.lc));
 
         position_bits + literal_bits
     }
 
     fn pos_state(&self, position: usize) -> u32 {
-        (position as u32) & ((1 << self.properties.pb) - 1)
+        ((position - self.dictionary_start) as u32) & ((1 << self.properties.pb) - 1)
     }
 
     fn match_index(&self, state: u32, pos_state: u32) -> usize {
@@ -1345,7 +1346,7 @@ impl LzmaEncoder {
     }
 
     fn literal_price(&self, input: &[u8], position: usize, state: u32, reps: [u32; 4]) -> u32 {
-        let previous = if position == 0 {
+        let previous = if position == self.dictionary_start {
             0
         } else {
             input[position - 1]
@@ -1563,7 +1564,8 @@ impl LzmaDecoder {
             .ok_or(Error::Format("LZMA output size overflow"))?;
 
         while output.len() < target {
-            let pos_state = (output.len() as u32) & ((1 << self.properties.pb) - 1);
+            let pos_state =
+                ((output.len() - dictionary_start) as u32) & ((1 << self.properties.pb) - 1);
             let state = self.state as usize;
             let match_index = (state << NUM_POS_BITS_MAX) + pos_state as usize;
 
@@ -1585,8 +1587,12 @@ impl LzmaDecoder {
         output: &mut Vec<u8>,
         dictionary_start: usize,
     ) -> Result<()> {
-        let previous = output.last().copied().unwrap_or(0);
-        let context = self.literal_context(output.len(), previous);
+        let previous = if output.len() == dictionary_start {
+            0
+        } else {
+            output.last().copied().unwrap_or(0)
+        };
+        let context = self.literal_context(output.len() - dictionary_start, previous);
         let offset = context * 0x300;
         let symbol = if state_is_literal(self.state) {
             decode_literal_plain(range, &mut self.literal[offset..offset + 0x300])?
@@ -1890,7 +1896,7 @@ impl RangeEncoder {
     fn new(output_limit: Option<usize>) -> RangeEncoder {
         RangeEncoder {
             cache: 0,
-            cache_size: 0,
+            cache_size: 1,
             low: 0,
             output: Vec::new(),
             output_limit,
@@ -1973,29 +1979,25 @@ impl RangeEncoder {
     fn shift_low(&mut self) {
         let low = self.low as u32;
         let high = (self.low >> 32) as u8;
-        self.low = u64::from(low << 8);
 
         if low < 0xFF00_0000 || high != 0 {
-            self.output.push(self.cache.wrapping_add(high));
-            self.check_output_limit();
-            self.cache = (low >> 24) as u8;
-
-            if self.cache_size == 0 {
-                return;
-            }
-
-            let carry_byte = high.wrapping_add(0xFF);
+            let mut byte = self.cache;
             loop {
-                self.output.push(carry_byte);
+                self.output.push(byte.wrapping_add(high));
                 self.check_output_limit();
                 self.cache_size -= 1;
                 if self.cache_size == 0 {
-                    return;
+                    break;
                 }
+
+                byte = 0xFF;
             }
+
+            self.cache = (low >> 24) as u8;
         }
 
         self.cache_size += 1;
+        self.low = u64::from(low << 8);
     }
 
     fn check_output_limit(&mut self) {
