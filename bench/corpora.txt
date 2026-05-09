@@ -1,7 +1,22 @@
 # name|tier|url|notes
 canterbury|standard|https://corpus.canterbury.ac.nz/resources/cantrbry.tar.gz|classic corpus
+calgary|standard|https://corpus.canterbury.ac.nz/resources/calgary.tar.gz|historic 14-file corpus
+canterbury-large|standard|https://corpus.canterbury.ac.nz/resources/large.tar.gz|larger Canterbury files
+canterbury-artificial|diagnostic|https://corpus.canterbury.ac.nz/resources/artificl.tar.gz|pathological artificial files
 silesia|standard|https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip|mixed 200 MiB corpus
 enwik8|standard|https://www.mattmahoney.net/dc/enwik8.zip|100 MiB Wikipedia XML prefix
 enwik9|release|https://www.mattmahoney.net/dc/enwik9.zip|1 GiB Wikipedia XML prefix
+pch-english-50mb|standard|https://pizzachili.dcc.uchile.cl/texts/nlang/english.50MB.gz|Pizza&Chili natural language prefix
+pch-sources-50mb|standard|https://pizzachili.dcc.uchile.cl/texts/code/sources.50MB.gz|Pizza&Chili source-code prefix
+pch-dna-50mb|standard|https://pizzachili.dcc.uchile.cl/texts/dna/dna.50MB.gz|Pizza&Chili DNA prefix
+pch-proteins-50mb|standard|https://pizzachili.dcc.uchile.cl/texts/protein/proteins.50MB.gz|Pizza&Chili protein prefix
+pch-dblp-50mb|standard|https://pizzachili.dcc.uchile.cl/texts/xml/dblp.xml.50MB.gz|Pizza&Chili XML prefix
+pch-world-leaders|standard|https://pizzachili.dcc.uchile.cl/repcorpus/real/world_leaders.gz|Pizza&Chili repetitive real text
+pch-android-log|standard|https://pizzachili.dcc.uchile.cl/repcorpus/logs/Android.gz|Pizza&Chili log corpus sample
+pch-english-100mb|release|https://pizzachili.dcc.uchile.cl/texts/nlang/english.100MB.gz|larger Pizza&Chili natural language prefix
+pch-sources-100mb|release|https://pizzachili.dcc.uchile.cl/texts/code/sources.100MB.gz|larger Pizza&Chili source-code prefix
+pch-dna-100mb|release|https://pizzachili.dcc.uchile.cl/texts/dna/dna.100MB.gz|larger Pizza&Chili DNA prefix
+pch-proteins-100mb|release|https://pizzachili.dcc.uchile.cl/texts/protein/proteins.100MB.gz|larger Pizza&Chili protein prefix
+pch-dblp-100mb|release|https://pizzachili.dcc.uchile.cl/texts/xml/dblp.xml.100MB.gz|larger Pizza&Chili XML prefix
 pizzachili|release|https://pizzachili.dcc.uchile.cl/repcorpus.html|repetitive corpus index page
 gharchive|release|https://www.gharchive.org/|choose fixed hourly JSON events slice

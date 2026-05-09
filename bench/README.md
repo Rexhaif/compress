@@ -9,10 +9,34 @@ Day-one corpus tiers:
 
 - Smoke: generated empty, small text, repeated bytes, random bytes, and
   boundary-sized fixtures.
-- Standard: Canterbury Corpus, Silesia Corpus, and `enwik8`.
-- Release: `enwik9`, Pizza&Chili repetitive corpus, Govdocs subsets, fixed
-  GH Archive or Common Crawl slices, logs, JSON/NDJSON, CSV, source trees,
+- Standard: Canterbury/Calgary, Large Canterbury, Silesia, `enwik8`,
+  Pizza&Chili 50 MiB text-family prefixes, and a couple of Pizza&Chili
+  repetitive/log samples.
+- Release: `enwik9`, larger Pizza&Chili prefixes, Govdocs subsets, fixed GH
+  Archive or Common Crawl slices, logs, JSON/NDJSON, CSV, source trees,
   database dumps, and already-compressed files.
+
+Fetch practical benchmark corpora into the ignored cache with:
+
+```sh
+bench/fetch-corpora.sh standard
+```
+
+The fetcher downloads archives into `bench/cache/downloads`, extracts corpora
+under `bench/cache`, writes prepared single-file inputs to `bench/cache/inputs`,
+and records byte counts plus SHA-256 values in `bench/cache/manifest.tsv`.
+Multi-file corpora are packed into deterministic `.tar` files because
+`bench/run` benchmarks one input file at a time. For strict corpus reporting,
+run the extracted files individually and aggregate the JSONL rows externally.
+
+Useful fetch groups:
+
+```sh
+bench/fetch-corpora.sh canterbury-suite
+bench/fetch-corpora.sh pizzachili-50mb
+bench/fetch-corpora.sh pizzachili-repetitive
+bench/fetch-corpora.sh release
+```
 
 Metrics to record per run:
 
@@ -33,6 +57,7 @@ capture:
 
 ```sh
 bench/run target/release/compress bench/cache/enwik8 > bench/results/enwik8.jsonl
+bench/run target/release/compress bench/cache/inputs/silesia.tar > bench/results/silesia.jsonl
 bench/run --jsonl target/release/compress bench/cache/enwik8
 bench/run --mode jsonl target/release/compress bench/cache/enwik8
 ```
