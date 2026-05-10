@@ -282,6 +282,7 @@ fn cyclic_msd_order(input: &[u8]) -> Vec<u32> {
         std::mem::swap(&mut order, &mut scratch);
     }
 
+    let doubled = doubled_input(input);
     let mut start = 0usize;
     let mut previous_key = cyclic_prefix_u32(input, order[0] as usize);
     for index in 1..=n {
@@ -304,10 +305,10 @@ fn cyclic_msd_order(input: &[u8]) -> Vec<u32> {
         let len = index - start;
         if len > 1 {
             if len <= 32 {
-                insertion_sort_rotations_chunked(&mut order[start..index], input, prefix_len);
+                insertion_sort_rotations_linear(&mut order[start..index], &doubled, n, prefix_len);
             } else {
                 order[start..index].sort_unstable_by(|&left, &right| {
-                    compare_rotation_chunked(input, left as usize, right as usize, prefix_len)
+                    compare_rotation_linear(&doubled, n, left as usize, right as usize, prefix_len)
                 });
             }
         }
@@ -325,80 +326,6 @@ fn rotation_byte(input: &[u8], position: usize, depth: usize) -> u8 {
     } else {
         input[index]
     }
-}
-
-fn compare_rotation_chunked(
-    input: &[u8],
-    left: usize,
-    right: usize,
-    depth: usize,
-) -> std::cmp::Ordering {
-    let n = input.len();
-    let mut offset = depth;
-
-    while offset < n {
-        let left_sum = left + offset;
-        let right_sum = right + offset;
-        let left_index = if left_sum >= n {
-            left_sum - n
-        } else {
-            left_sum
-        };
-        let right_index = if right_sum >= n {
-            right_sum - n
-        } else {
-            right_sum
-        };
-
-        #[cfg(target_arch = "x86_64")]
-        if offset + 16 <= n && left_index + 16 <= n && right_index + 16 <= n {
-            let mismatch = unsafe {
-                first_mismatch_sse2(
-                    input.as_ptr().add(left_index),
-                    input.as_ptr().add(right_index),
-                )
-            };
-            if mismatch == 16 {
-                offset += 16;
-                continue;
-            }
-
-            let mismatch = mismatch as usize;
-            return input[left_index + mismatch].cmp(&input[right_index + mismatch]);
-        }
-
-        if offset + 8 <= n && left_index + 8 <= n && right_index + 8 <= n {
-            // Big-endian words preserve bytewise lexicographic order.
-            let left_word =
-                unsafe { std::ptr::read_unaligned(input.as_ptr().add(left_index).cast::<u64>()) };
-            let right_word =
-                unsafe { std::ptr::read_unaligned(input.as_ptr().add(right_index).cast::<u64>()) };
-            let left_word = u64::from_be(left_word);
-            let right_word = u64::from_be(right_word);
-            match left_word.cmp(&right_word) {
-                std::cmp::Ordering::Equal => {
-                    offset += 8;
-                    continue;
-                }
-                ordering => return ordering,
-            }
-        }
-
-        let len = (n - offset).min(n - left_index).min(n - right_index);
-
-        // `len` is capped by both remaining contiguous ranges, so both slices
-        // are within the input block.
-        let left_slice = unsafe { std::slice::from_raw_parts(input.as_ptr().add(left_index), len) };
-        let right_slice =
-            unsafe { std::slice::from_raw_parts(input.as_ptr().add(right_index), len) };
-
-        match left_slice.cmp(right_slice) {
-            std::cmp::Ordering::Equal => offset += len,
-            ordering => return ordering,
-        }
-    }
-
-    left.cmp(&right)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -614,15 +541,27 @@ fn refine_cyclic_order(
     order
 }
 
+fn doubled_input(input: &[u8]) -> Vec<u8> {
+    let mut doubled = Vec::with_capacity(input.len() * 2);
+    doubled.extend_from_slice(input);
+    doubled.extend_from_slice(input);
+    doubled
+}
+
 fn exact_sort_prefix_groups(input: &[u8], order: &mut [u32], depth: usize) {
+    let doubled = doubled_input(input);
+    exact_sort_prefix_groups_linear(&doubled, input.len(), order, depth);
+}
+
+fn exact_sort_prefix_groups_linear(doubled: &[u8], n: usize, order: &mut [u32], depth: usize) {
     let mut start = 0usize;
-    let mut previous_key = cyclic_prefix_u64(input, order[0] as usize);
+    let mut previous_key = cyclic_prefix_u64_linear(doubled, order[0] as usize);
 
     for index in 1..=order.len() {
         let at_group_end = if index == order.len() {
             true
         } else {
-            let current_key = cyclic_prefix_u64(input, order[index] as usize);
+            let current_key = cyclic_prefix_u64_linear(doubled, order[index] as usize);
             if current_key == previous_key {
                 false
             } else {
@@ -637,8 +576,9 @@ fn exact_sort_prefix_groups(input: &[u8], order: &mut [u32], depth: usize) {
 
         let len = index - start;
         if len == 2 {
-            if compare_rotation_chunked(
-                input,
+            if compare_rotation_linear(
+                doubled,
+                n,
                 order[start] as usize,
                 order[start + 1] as usize,
                 depth,
@@ -648,22 +588,22 @@ fn exact_sort_prefix_groups(input: &[u8], order: &mut [u32], depth: usize) {
                 order.swap(start, start + 1);
             }
         } else if len <= 16 {
-            insertion_sort_rotations_chunked(&mut order[start..index], input, depth);
+            insertion_sort_rotations_linear(&mut order[start..index], doubled, n, depth);
         } else if len > 2 {
             order[start..index].sort_unstable_by(|&left, &right| {
-                compare_rotation_chunked(input, left as usize, right as usize, depth)
+                compare_rotation_linear(doubled, n, left as usize, right as usize, depth)
             });
         }
         start = index;
     }
 }
 
-fn insertion_sort_rotations_chunked(order: &mut [u32], input: &[u8], depth: usize) {
+fn insertion_sort_rotations_linear(order: &mut [u32], doubled: &[u8], n: usize, depth: usize) {
     for index in 1..order.len() {
         let value = order[index];
         let mut slot = index;
         while slot > 0
-            && compare_rotation_chunked(input, value as usize, order[slot - 1] as usize, depth)
+            && compare_rotation_linear(doubled, n, value as usize, order[slot - 1] as usize, depth)
                 .is_lt()
         {
             order[slot] = order[slot - 1];
@@ -671,6 +611,67 @@ fn insertion_sort_rotations_chunked(order: &mut [u32], input: &[u8], depth: usiz
         }
         order[slot] = value;
     }
+}
+
+fn compare_rotation_linear(
+    doubled: &[u8],
+    n: usize,
+    left: usize,
+    right: usize,
+    depth: usize,
+) -> std::cmp::Ordering {
+    let mut offset = depth;
+
+    while offset < n {
+        #[cfg(target_arch = "x86_64")]
+        if offset + 16 <= n {
+            let mismatch = unsafe {
+                first_mismatch_sse2(
+                    doubled.as_ptr().add(left + offset),
+                    doubled.as_ptr().add(right + offset),
+                )
+            };
+            if mismatch == 16 {
+                offset += 16;
+                continue;
+            }
+
+            let mismatch = mismatch as usize;
+            return doubled[left + offset + mismatch].cmp(&doubled[right + offset + mismatch]);
+        }
+
+        if offset + 8 <= n {
+            // Big-endian words preserve bytewise lexicographic order.
+            let left_word = unsafe {
+                std::ptr::read_unaligned(doubled.as_ptr().add(left + offset).cast::<u64>())
+            };
+            let right_word = unsafe {
+                std::ptr::read_unaligned(doubled.as_ptr().add(right + offset).cast::<u64>())
+            };
+            let left_word = u64::from_be(left_word);
+            let right_word = u64::from_be(right_word);
+            match left_word.cmp(&right_word) {
+                std::cmp::Ordering::Equal => {
+                    offset += 8;
+                    continue;
+                }
+                ordering => return ordering,
+            }
+        }
+
+        let remaining = n - offset;
+        let left_slice =
+            unsafe { std::slice::from_raw_parts(doubled.as_ptr().add(left + offset), remaining) };
+        let right_slice =
+            unsafe { std::slice::from_raw_parts(doubled.as_ptr().add(right + offset), remaining) };
+
+        match left_slice.cmp(right_slice) {
+            std::cmp::Ordering::Equal => offset = n,
+            ordering => return ordering,
+        }
+    }
+
+    left.cmp(&right)
 }
 
 #[inline(always)]
@@ -716,6 +717,12 @@ fn cyclic_prefix_u64(input: &[u8], position: usize) -> u64 {
         value = (value << 8) | u64::from(rotation_byte(input, position, offset));
     }
     value
+}
+
+#[inline(always)]
+fn cyclic_prefix_u64_linear(doubled: &[u8], position: usize) -> u64 {
+    let word = unsafe { std::ptr::read_unaligned(doubled.as_ptr().add(position).cast::<u64>()) };
+    u64::from_be(word)
 }
 
 #[inline(always)]

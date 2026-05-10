@@ -152,8 +152,7 @@ where
         flush_zero_run(zero_run, &mut symbols);
         zero_run = 0;
         symbols.push(index as u16 + 1);
-        mtf.copy_within(0..index, 1);
-        mtf[0] = byte;
+        move_to_front_scan(&mut mtf, byte, index);
     }
 
     flush_zero_run(zero_run, &mut symbols);
@@ -164,6 +163,30 @@ where
         used,
         used_symbols,
     }
+}
+
+#[inline(always)]
+fn move_to_front_scan(mtf: &mut [u8; 256], byte: u8, index: usize) {
+    match index {
+        1 => mtf[1] = mtf[0],
+        2 => {
+            mtf[2] = mtf[1];
+            mtf[1] = mtf[0];
+        }
+        3 => {
+            mtf[3] = mtf[2];
+            mtf[2] = mtf[1];
+            mtf[1] = mtf[0];
+        }
+        4 => {
+            mtf[4] = mtf[3];
+            mtf[3] = mtf[2];
+            mtf[2] = mtf[1];
+            mtf[1] = mtf[0];
+        }
+        _ => mtf.copy_within(0..index, 1),
+    }
+    mtf[0] = byte;
 }
 
 #[inline(always)]

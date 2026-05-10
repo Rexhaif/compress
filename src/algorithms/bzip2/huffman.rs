@@ -45,10 +45,11 @@ pub fn encode_symbols_with_passes(
 
     for _ in 0..refinement_passes {
         let mut table_frequencies = [[0u32; 258]; MAX_GROUPS];
+        let length_lookup = length_lookup(&lengths, alpha_size);
         selectors.clear();
 
         for chunk in symbols.chunks(GROUP_SIZE) {
-            let selector = best_table(chunk, &lengths);
+            let selector = best_table(chunk, &length_lookup, group_count);
             selectors.push(selector as u8);
             let table_frequency = &mut table_frequencies[selector];
             for &symbol in chunk {
@@ -66,10 +67,11 @@ pub fn encode_symbols_with_passes(
     }
 
     selectors.clear();
+    let length_lookup = length_lookup(&lengths, alpha_size);
     selectors.extend(
         symbols
             .chunks(GROUP_SIZE)
-            .map(|chunk| best_table(chunk, &lengths) as u8),
+            .map(|chunk| best_table(chunk, &length_lookup, group_count) as u8),
     );
 
     if selectors.len() > 0x7FFF {
@@ -160,19 +162,33 @@ fn initial_code_lengths(symbols: &[u16], alpha_size: usize, group_count: usize) 
     lengths
 }
 
-fn best_table(symbols: &[u16], lengths: &[Vec<u8>]) -> usize {
-    if lengths.len() == 6 {
+fn length_lookup(lengths: &[Vec<u8>], alpha_size: usize) -> Vec<[u8; MAX_GROUPS]> {
+    let mut lookup = vec![[0u8; MAX_GROUPS]; alpha_size];
+    for (table, table_lengths) in lengths.iter().enumerate() {
+        for symbol in 0..alpha_size {
+            lookup[symbol][table] = table_lengths[symbol];
+        }
+    }
+
+    lookup
+}
+
+fn best_table(symbols: &[u16], lengths: &[[u8; MAX_GROUPS]], group_count: usize) -> usize {
+    if group_count == 6 {
         return best_table_six(symbols, lengths);
     }
 
-    let mut best_table = 0usize;
-    let mut best_cost = u32::MAX;
+    let mut costs = [0u32; MAX_GROUPS];
+    for &symbol in symbols {
+        let symbol_lengths = unsafe { lengths.get_unchecked(usize::from(symbol)) };
+        for (table, cost) in costs.iter_mut().enumerate().take(group_count) {
+            *cost += u32::from(unsafe { *symbol_lengths.get_unchecked(table) });
+        }
+    }
 
-    for (table, lengths) in lengths.iter().enumerate() {
-        let cost = symbols
-            .iter()
-            .map(|&symbol| u32::from(lengths[usize::from(symbol)]))
-            .sum();
+    let mut best_table = 0usize;
+    let mut best_cost = costs[0];
+    for (table, &cost) in costs.iter().enumerate().take(group_count).skip(1) {
         if cost < best_cost {
             best_cost = cost;
             best_table = table;
@@ -182,13 +198,7 @@ fn best_table(symbols: &[u16], lengths: &[Vec<u8>]) -> usize {
     best_table
 }
 
-fn best_table_six(symbols: &[u16], lengths: &[Vec<u8>]) -> usize {
-    let l0 = &lengths[0];
-    let l1 = &lengths[1];
-    let l2 = &lengths[2];
-    let l3 = &lengths[3];
-    let l4 = &lengths[4];
-    let l5 = &lengths[5];
+fn best_table_six(symbols: &[u16], lengths: &[[u8; MAX_GROUPS]]) -> usize {
     let mut c0 = 0u32;
     let mut c1 = 0u32;
     let mut c2 = 0u32;
@@ -198,52 +208,50 @@ fn best_table_six(symbols: &[u16], lengths: &[Vec<u8>]) -> usize {
 
     let mut index = 0usize;
     while index + 4 <= symbols.len() {
-        let s0 = usize::from(symbols[index]);
-        let s1 = usize::from(symbols[index + 1]);
-        let s2 = usize::from(symbols[index + 2]);
-        let s3 = usize::from(symbols[index + 3]);
+        let s0 = unsafe { lengths.get_unchecked(usize::from(symbols[index])) };
+        let s1 = unsafe { lengths.get_unchecked(usize::from(symbols[index + 1])) };
+        let s2 = unsafe { lengths.get_unchecked(usize::from(symbols[index + 2])) };
+        let s3 = unsafe { lengths.get_unchecked(usize::from(symbols[index + 3])) };
 
         // The MTF/Huffman pipeline only emits symbols below `alpha_size`, and
         // every length table is built to that same size.
         unsafe {
-            c0 += u32::from(*l0.get_unchecked(s0))
-                + u32::from(*l0.get_unchecked(s1))
-                + u32::from(*l0.get_unchecked(s2))
-                + u32::from(*l0.get_unchecked(s3));
-            c1 += u32::from(*l1.get_unchecked(s0))
-                + u32::from(*l1.get_unchecked(s1))
-                + u32::from(*l1.get_unchecked(s2))
-                + u32::from(*l1.get_unchecked(s3));
-            c2 += u32::from(*l2.get_unchecked(s0))
-                + u32::from(*l2.get_unchecked(s1))
-                + u32::from(*l2.get_unchecked(s2))
-                + u32::from(*l2.get_unchecked(s3));
-            c3 += u32::from(*l3.get_unchecked(s0))
-                + u32::from(*l3.get_unchecked(s1))
-                + u32::from(*l3.get_unchecked(s2))
-                + u32::from(*l3.get_unchecked(s3));
-            c4 += u32::from(*l4.get_unchecked(s0))
-                + u32::from(*l4.get_unchecked(s1))
-                + u32::from(*l4.get_unchecked(s2))
-                + u32::from(*l4.get_unchecked(s3));
-            c5 += u32::from(*l5.get_unchecked(s0))
-                + u32::from(*l5.get_unchecked(s1))
-                + u32::from(*l5.get_unchecked(s2))
-                + u32::from(*l5.get_unchecked(s3));
+            c0 += u32::from(*s0.get_unchecked(0))
+                + u32::from(*s1.get_unchecked(0))
+                + u32::from(*s2.get_unchecked(0))
+                + u32::from(*s3.get_unchecked(0));
+            c1 += u32::from(*s0.get_unchecked(1))
+                + u32::from(*s1.get_unchecked(1))
+                + u32::from(*s2.get_unchecked(1))
+                + u32::from(*s3.get_unchecked(1));
+            c2 += u32::from(*s0.get_unchecked(2))
+                + u32::from(*s1.get_unchecked(2))
+                + u32::from(*s2.get_unchecked(2))
+                + u32::from(*s3.get_unchecked(2));
+            c3 += u32::from(*s0.get_unchecked(3))
+                + u32::from(*s1.get_unchecked(3))
+                + u32::from(*s2.get_unchecked(3))
+                + u32::from(*s3.get_unchecked(3));
+            c4 += u32::from(*s0.get_unchecked(4))
+                + u32::from(*s1.get_unchecked(4))
+                + u32::from(*s2.get_unchecked(4))
+                + u32::from(*s3.get_unchecked(4));
+            c5 += u32::from(*s0.get_unchecked(5))
+                + u32::from(*s1.get_unchecked(5))
+                + u32::from(*s2.get_unchecked(5))
+                + u32::from(*s3.get_unchecked(5));
         }
         index += 4;
     }
 
     while index < symbols.len() {
-        let symbol = usize::from(symbols[index]);
-        unsafe {
-            c0 += u32::from(*l0.get_unchecked(symbol));
-            c1 += u32::from(*l1.get_unchecked(symbol));
-            c2 += u32::from(*l2.get_unchecked(symbol));
-            c3 += u32::from(*l3.get_unchecked(symbol));
-            c4 += u32::from(*l4.get_unchecked(symbol));
-            c5 += u32::from(*l5.get_unchecked(symbol));
-        }
+        let symbol_lengths = unsafe { lengths.get_unchecked(usize::from(symbols[index])) };
+        c0 += u32::from(symbol_lengths[0]);
+        c1 += u32::from(symbol_lengths[1]);
+        c2 += u32::from(symbol_lengths[2]);
+        c3 += u32::from(symbol_lengths[3]);
+        c4 += u32::from(symbol_lengths[4]);
+        c5 += u32::from(symbol_lengths[5]);
         index += 1;
     }
 
