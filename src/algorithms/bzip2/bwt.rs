@@ -647,7 +647,7 @@ fn exact_sort_prefix_groups(input: &[u8], order: &mut [u32], depth: usize) {
             {
                 order.swap(start, start + 1);
             }
-        } else if len <= 4 {
+        } else if len <= 12 {
             insertion_sort_rotations_chunked(&mut order[start..index], input, depth);
         } else if len > 2 {
             order[start..index].sort_unstable_by(|&left, &right| {
