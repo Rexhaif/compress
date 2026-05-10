@@ -335,10 +335,16 @@ impl LzmaEncoder {
         );
 
         let reps = self.rep_matches(input, position, end);
-        let mut decision = choose_decision(adjusted_normal_candidate(&matches), &reps);
-        if lazy {
-            decision = self.lazy_greedy_decision(input, position, end, decision);
-        }
+        let normal = adjusted_normal_candidate(&matches);
+        let decision = if let Some(decision) = self.nice_len_decision(normal, &reps) {
+            decision
+        } else {
+            let mut decision = choose_decision(normal, &reps);
+            if lazy {
+                decision = self.lazy_greedy_decision(input, position, end, decision);
+            }
+            decision
+        };
 
         self.finder.skip_insert(
             input,
@@ -349,6 +355,30 @@ impl LzmaEncoder {
         );
 
         decision
+    }
+
+    fn nice_len_decision(
+        &self,
+        normal: Option<MatchCandidate>,
+        reps: &[MatchCandidate; 4],
+    ) -> Option<ParseDecision> {
+        let rep = best_rep(reps);
+        if rep.length as usize >= self.nice {
+            return Some(rep_decision(rep, rep.length));
+        }
+
+        if let Some(normal) = normal
+            && normal.length as usize >= self.nice
+        {
+            return Some(ParseDecision {
+                distance: normal.distance,
+                kind: DecisionKind::Match,
+                length: normal.length,
+                rep_index: 0,
+            });
+        }
+
+        None
     }
 
     fn lazy_greedy_decision(
