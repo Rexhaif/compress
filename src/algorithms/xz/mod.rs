@@ -5,7 +5,9 @@ use crate::error::{Error, Result};
 
 use rayon::prelude::*;
 
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
+use std::sync::mpsc;
 
 const FOOTER_MAGIC: [u8; 2] = [0x59, 0x5A];
 const HEADER_MAGIC: [u8; 6] = [0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00];
@@ -168,24 +170,75 @@ pub fn decode_stream_with_threads_to_writer<W: Write>(
     }
 
     if threads > 1 && parsed_blocks.len() > 1 {
-        let decoded_blocks = parallel_pool(threads)?.install(|| {
-            parsed_blocks
-                .par_iter()
-                .zip(stream.records.par_iter())
-                .map(|(block, record)| decode_parsed_block(block, *record, stream.check))
-                .collect::<Result<Vec<_>>>()
-        })?;
-
-        for block_output in decoded_blocks {
-            writer.write_all(&block_output)?;
-        }
-
-        return Ok(());
+        return decode_parsed_blocks_to_writer_parallel(
+            &parsed_blocks,
+            &stream.records,
+            stream.check,
+            threads,
+            &mut writer,
+        );
     }
 
     for (block, record) in parsed_blocks.iter().zip(stream.records.iter()) {
         let block_output = decode_parsed_block(block, *record, stream.check)?;
         writer.write_all(&block_output)?;
+    }
+
+    Ok(())
+}
+
+fn decode_parsed_blocks_to_writer_parallel<W: Write>(
+    parsed_blocks: &[ParsedBlock<'_>],
+    records: &[IndexRecord],
+    check: CheckType,
+    threads: u32,
+    writer: &mut W,
+) -> Result<()> {
+    let pool = parallel_pool(threads)?;
+    let (sender, receiver) = mpsc::channel();
+
+    std::thread::scope(|thread_scope| {
+        let scheduler = thread_scope.spawn(move || {
+            pool.scope(|scope| {
+                for (index, (block, record)) in parsed_blocks.iter().zip(records.iter()).enumerate()
+                {
+                    let sender = sender.clone();
+                    scope.spawn(move |_| {
+                        let result = decode_parsed_block(block, *record, check);
+                        let _ = sender.send((index, result));
+                    });
+                }
+                drop(sender);
+            });
+        });
+
+        let result = write_decoded_blocks(receiver, writer);
+        if scheduler.join().is_err() && result.is_ok() {
+            return Err(Error::Message("xz decode worker panicked".to_string()));
+        }
+
+        result
+    })
+}
+
+fn write_decoded_blocks<W: Write>(
+    receiver: mpsc::Receiver<(usize, Result<Vec<u8>>)>,
+    writer: &mut W,
+) -> Result<()> {
+    let mut pending = BTreeMap::new();
+    let mut next = 0usize;
+
+    for (index, decoded) in receiver {
+        match decoded {
+            Ok(bytes) => {
+                pending.insert(index, bytes);
+                while let Some(bytes) = pending.remove(&next) {
+                    writer.write_all(&bytes)?;
+                    next += 1;
+                }
+            }
+            Err(error) => return Err(error),
+        }
     }
 
     Ok(())
