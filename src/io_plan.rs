@@ -9,7 +9,9 @@ use crate::registry::{self, AdapterKind};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(not(unix))]
+use std::process::Stdio;
 
 pub fn execute(options: &Options) -> Result<()> {
     let spec = registry::lookup(options.algorithm);
@@ -92,6 +94,14 @@ fn execute_file_compress(
     codec_options: &CodecOptions,
 ) -> Result<()> {
     if options.stdout {
+        if let CodecOptions::Xz(xz_options) = codec_options
+            && options.files.len() == 1
+            && xz::system_xz_fast_path_enabled(xz_options)
+            && xz::system_xz_available()
+        {
+            return exec_system_xz_compress_stdout(path, xz_options);
+        }
+
         let input = fs::File::open(path)?;
         let input_capacity = file_len_hint(&input);
         let stdout = std::io::stdout();
@@ -124,8 +134,9 @@ fn execute_file_decompress(
     codec_options: &CodecOptions,
 ) -> Result<()> {
     if options.stdout
+        && options.files.len() == 1
         && let CodecOptions::Xz(xz_options) = codec_options
-        && system_xz_available()
+        && xz::system_xz_available()
     {
         return exec_system_xz_decompress_stdout(path, xz_options.threads);
     }
@@ -142,6 +153,44 @@ fn execute_file_decompress(
     write_output_file(path, &target, &output, options)?;
 
     Ok(())
+}
+
+#[cfg(unix)]
+fn exec_system_xz_compress_stdout(path: &Path, options: &XzOptions) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+
+    let threads_arg = format!("-T{}", options.threads.max(1));
+    let error = Command::new("xz")
+        .args([
+            "-6",
+            threads_arg.as_str(),
+            xz::system_xz_block_size_arg(options.threads),
+            "-c",
+        ])
+        .arg(path)
+        .exec();
+    Err(Error::Io(error))
+}
+
+#[cfg(not(unix))]
+fn exec_system_xz_compress_stdout(path: &Path, options: &XzOptions) -> Result<()> {
+    let threads_arg = format!("-T{}", options.threads.max(1));
+    let status = Command::new("xz")
+        .args([
+            "-6",
+            threads_arg.as_str(),
+            xz::system_xz_block_size_arg(options.threads),
+            "-c",
+        ])
+        .arg(path)
+        .stdin(Stdio::null())
+        .status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(Error::Message(format!("xz failed with status {status}")))
+    }
 }
 
 #[cfg(unix)]
@@ -168,17 +217,6 @@ fn exec_system_xz_decompress_stdout(path: &Path, threads: u32) -> Result<()> {
     } else {
         Err(Error::Message(format!("xz failed with status {status}")))
     }
-}
-
-fn system_xz_available() -> bool {
-    Command::new("xz")
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
 }
 
 fn execute_file_test(path: &Path, codec_options: &CodecOptions) -> Result<()> {

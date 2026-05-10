@@ -120,13 +120,10 @@ fn try_encode_with_system_xz<R: Read, W: Write>(
     let mut input = Vec::new();
     reader.read_to_end(&mut input)?;
 
+    let threads_arg = format!("-T{}", options.threads.max(1));
+    let block_size_arg = system_xz_block_size_arg(options.threads);
     let mut child = Command::new("xz")
-        .args([
-            "-6",
-            &format!("-T{}", options.threads.max(1)),
-            "--block-size=12MiB",
-            "-c",
-        ])
+        .args(["-6", threads_arg.as_str(), block_size_arg, "-c"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()?;
@@ -159,7 +156,15 @@ fn try_encode_with_system_xz<R: Read, W: Write>(
     Ok(true)
 }
 
-fn system_xz_fast_path_enabled(options: &XzOptions) -> bool {
+pub(crate) fn system_xz_block_size_arg(threads: u32) -> &'static str {
+    if threads <= 1 {
+        "--block-size=64MiB"
+    } else {
+        "--block-size=24MiB"
+    }
+}
+
+pub(crate) fn system_xz_fast_path_enabled(options: &XzOptions) -> bool {
     options.block_size.is_none()
         && options.check == CheckType::Crc64
         && options.depth == 128
@@ -172,7 +177,7 @@ fn system_xz_fast_path_enabled(options: &XzOptions) -> bool {
         && options.pb == 2
 }
 
-fn system_xz_available() -> bool {
+pub(crate) fn system_xz_available() -> bool {
     static SYSTEM_XZ_AVAILABLE: OnceLock<bool> = OnceLock::new();
     *SYSTEM_XZ_AVAILABLE.get_or_init(|| {
         Command::new("xz")
