@@ -76,10 +76,9 @@ pub fn encode_with_huffman_passes(
 }
 
 fn adaptive_huffman_refinement_passes(symbol_count: usize) -> usize {
-    // In large parallel level-9 blocks, high MTF counts are Huffman-heavy.
-    // Two refinement passes recover the wall-time cost while staying within
-    // the stock bzip2 size envelope on the benchmark corpus.
-    if symbol_count >= 555_250 { 2 } else { 3 }
+    // One refinement pass is enough for symbol-heavy blocks and saves encode
+    // time; smaller blocks keep two passes to stay inside the size budget.
+    if symbol_count >= 350_000 { 1 } else { 2 }
 }
 
 pub fn decode_after_magic(reader: &mut BitReader<'_>, block_size_100k: u8) -> Result<DecodedBlock> {
