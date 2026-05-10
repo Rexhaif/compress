@@ -26,8 +26,8 @@ const MATCH_PRICE_REFRESH: u32 = 1 << 7;
 const EMPTY_MATCH: u32 = u32::MAX;
 // Bytes covered by an already chosen match only maintain the future search
 // tree, so capping their insert work buys speed with a small ratio tradeoff.
-const SKIP_INSERT_DEPTH_MAX: u32 = 16;
-const SKIP_INSERT_NICE_MAX: usize = 32;
+const SKIP_INSERT_DEPTH_MAX: u32 = 18;
+const SKIP_INSERT_NICE_MAX: usize = 36;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CompressionMode {
