@@ -148,6 +148,49 @@ pub fn decode_stream_with_threads(input: &[u8], threads: u32) -> Result<Vec<u8>>
     Ok(output)
 }
 
+pub fn decode_stream_with_threads_to_writer<W: Write>(
+    input: &[u8],
+    threads: u32,
+    mut writer: W,
+) -> Result<()> {
+    let stream = parse_single_stream(input)?;
+    let mut parsed_blocks = Vec::with_capacity(stream.records.len());
+    let mut block_offset = 12usize;
+
+    for record in &stream.records {
+        let block = parse_block(input, block_offset, *record, stream.check)?;
+        block_offset = block.next_offset;
+        parsed_blocks.push(block);
+    }
+
+    if block_offset != stream.index_offset {
+        return Err(Error::Format("xz index offset mismatch"));
+    }
+
+    if threads > 1 && parsed_blocks.len() > 1 {
+        let decoded_blocks = parallel_pool(threads)?.install(|| {
+            parsed_blocks
+                .par_iter()
+                .zip(stream.records.par_iter())
+                .map(|(block, record)| decode_parsed_block(block, *record, stream.check))
+                .collect::<Result<Vec<_>>>()
+        })?;
+
+        for block_output in decoded_blocks {
+            writer.write_all(&block_output)?;
+        }
+
+        return Ok(());
+    }
+
+    for (block, record) in parsed_blocks.iter().zip(stream.records.iter()) {
+        let block_output = decode_parsed_block(block, *record, stream.check)?;
+        writer.write_all(&block_output)?;
+    }
+
+    Ok(())
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 fn available_threads() -> u32 {
     std::thread::available_parallelism()
