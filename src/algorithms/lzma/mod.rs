@@ -3008,11 +3008,11 @@ fn normal_match_is_worthwhile(normal: MatchCandidate) -> bool {
     }
 
     if normal.length == 4 {
-        return normal.distance <= 4096;
+        return normal.distance <= 131_072;
     }
 
     if normal.length == 3 {
-        return normal.distance <= 128;
+        return normal.distance <= 1024;
     }
 
     normal.length == 2 && normal.distance <= 16
