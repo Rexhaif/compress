@@ -154,7 +154,7 @@ fn fixed_chunk_len(block_size_100k: u8) -> usize {
     if block_size_100k == 6 {
         // Level 6 is the default benchmark path. Smaller fixed chunks improve
         // multicore balance; fixed-chunk Huffman passes below protect ratio.
-        return 520_000;
+        return 512_000;
     }
 
     let max_block_len = block::max_block_len(block_size_100k);
