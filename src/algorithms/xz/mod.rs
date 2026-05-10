@@ -158,7 +158,7 @@ fn try_encode_with_system_xz<R: Read, W: Write>(
 
 pub(crate) fn system_xz_block_size_arg(threads: u32) -> &'static str {
     if threads <= 1 {
-        "--block-size=64MiB"
+        "--block-size=96MiB"
     } else {
         "--block-size=24MiB"
     }
