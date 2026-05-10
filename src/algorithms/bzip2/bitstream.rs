@@ -164,6 +164,11 @@ impl<'a> BitReader<'a> {
         if self.bit_pos + usize::from(bits) > self.data.len() * 8 {
             return Err(Error::Format("truncated bzip2 bitstream"));
         }
+        if bits <= 16 {
+            let value = self.peek_bits(bits)?;
+            self.bit_pos += usize::from(bits);
+            return Ok(value);
+        }
 
         let mut value = 0u32;
         let mut remaining = bits;

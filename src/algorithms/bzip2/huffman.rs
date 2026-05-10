@@ -445,7 +445,10 @@ pub fn decode_symbols(
         .collect::<Result<_>>()?;
 
     let eob = (alpha_size - 1) as u16;
-    let mut symbols = Vec::new();
+    let symbol_capacity = selector_count
+        .saturating_mul(GROUP_SIZE)
+        .min(output_limit.saturating_mul(2).saturating_add(1024));
+    let mut symbols = Vec::with_capacity(symbol_capacity);
     let mut group_pos = 0usize;
     let mut selector_index = 0usize;
     let mut table = &tables[usize::from(selectors[0])];
@@ -481,7 +484,10 @@ fn read_selectors(
     group_count: usize,
     selector_count: usize,
 ) -> Result<Vec<u8>> {
-    let mut mtf: Vec<u8> = (0..group_count as u8).collect();
+    let mut mtf = [0u8; MAX_GROUPS];
+    for (index, value) in mtf.iter_mut().take(group_count).enumerate() {
+        *value = index as u8;
+    }
     let mut selectors = Vec::with_capacity(selector_count);
 
     for _ in 0..selector_count {
@@ -493,8 +499,11 @@ fn read_selectors(
             }
         }
 
-        let value = mtf.remove(index);
-        mtf.insert(0, value);
+        let value = mtf[index];
+        for slot in (1..=index).rev() {
+            mtf[slot] = mtf[slot - 1];
+        }
+        mtf[0] = value;
         selectors.push(value);
     }
 

@@ -265,7 +265,7 @@ pub fn decode(symbols: &[u16], used_symbols: &[u8], output_limit: usize) -> Resu
     let mut mtf = [0u8; 256];
     mtf[..used_symbols.len()].copy_from_slice(used_symbols);
     let mtf_len = used_symbols.len();
-    let mut output = Vec::new();
+    let mut output = Vec::with_capacity(symbols.len().min(output_limit));
     let mut index = 0usize;
 
     while index < symbols.len() {
