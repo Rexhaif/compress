@@ -127,7 +127,7 @@ fn encode_stream_without_fixed_chunks(
     output.extend_from_slice(b"BZh");
     output.push(b'0' + options.block_size_100k);
 
-    let mut writer = BitWriter::with_capacity(encoded_size + 16);
+    let mut writer = BitWriter::with_output_prefix(output);
     let mut combined_crc = 0u32;
 
     for encoded in &encoded_blocks {
@@ -137,9 +137,8 @@ fn encode_stream_without_fixed_chunks(
 
     writer.write_bits(block::EOS_MAGIC, 48);
     writer.write_bits(u64::from(combined_crc), 32);
-    output.extend_from_slice(&writer.finish());
 
-    Ok(output)
+    Ok(writer.finish())
 }
 
 fn assemble_streams(streams: Vec<Vec<u8>>) -> Vec<u8> {
@@ -238,13 +237,11 @@ fn wrap_single_block_stream(encoded: &block::EncodedBlock, block_size_100k: u8) 
     output.extend_from_slice(b"BZh");
     output.push(b'0' + block_size_100k);
 
-    let mut writer = BitWriter::with_capacity(encoded.bytes.len() + 16);
+    let mut writer = BitWriter::with_output_prefix(output);
     writer.write_bit_slice(&encoded.bytes, encoded.bit_len);
     writer.write_bits(block::EOS_MAGIC, 48);
     writer.write_bits(u64::from(encoded.crc), 32);
-    output.extend_from_slice(&writer.finish());
-
-    output
+    writer.finish()
 }
 
 fn encode_raw_blocks_parallel(

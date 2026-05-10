@@ -17,6 +17,15 @@ impl BitWriter {
         }
     }
 
+    pub fn with_output_prefix(bytes: Vec<u8>) -> BitWriter {
+        BitWriter {
+            bytes,
+            buffer: 0,
+            filled: 0,
+            bit_len: 0,
+        }
+    }
+
     #[inline]
     pub fn write_bit(&mut self, bit: bool) {
         self.buffer = (self.buffer << 1) | u64::from(bit);
