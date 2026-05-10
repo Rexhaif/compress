@@ -58,7 +58,7 @@ fn plan_chunk(data: &[u8], start: usize, options: &Lzma2Options) -> ChunkPlan {
     let low_variety = has_low_byte_variety(data, start);
     let unpack_size = if score >= 70 && low_variety {
         LZMA2_DENSE_CHUNK_MAX
-    } else if options.normal_chunk_max >= LZMA2_UNCOMPRESSED_CHUNK_MAX && score >= 55 {
+    } else if options.normal_chunk_max >= LZMA2_UNCOMPRESSED_CHUNK_MAX && score >= 53 {
         LZMA2_HIGH_SCORE_CHUNK_MAX
     } else if score >= 12 {
         options.normal_chunk_max
