@@ -283,30 +283,35 @@ fn cyclic_msd_order(input: &[u8]) -> Vec<u32> {
     }
 
     let mut start = 0usize;
-    while start < n {
-        let mut end = start + 1;
-        while end < n
-            && same_rotation_prefix(
-                input,
-                order[start] as usize,
-                order[end] as usize,
-                prefix_len,
-            )
-        {
-            end += 1;
+    let mut previous_key = cyclic_prefix_u32(input, order[0] as usize);
+    for index in 1..=n {
+        let at_group_end = if index == n {
+            true
+        } else {
+            let current_key = cyclic_prefix_u32(input, order[index] as usize);
+            if current_key == previous_key {
+                false
+            } else {
+                previous_key = current_key;
+                true
+            }
+        };
+
+        if !at_group_end {
+            continue;
         }
 
-        let len = end - start;
+        let len = index - start;
         if len > 1 {
             if len <= 32 {
-                insertion_sort_rotations_chunked(&mut order[start..end], input, prefix_len);
+                insertion_sort_rotations_chunked(&mut order[start..index], input, prefix_len);
             } else {
-                order[start..end].sort_unstable_by(|&left, &right| {
+                order[start..index].sort_unstable_by(|&left, &right| {
                     compare_rotation_chunked(input, left as usize, right as usize, prefix_len)
                 });
             }
         }
-        start = end;
+        start = index;
     }
 
     order
@@ -320,11 +325,6 @@ fn rotation_byte(input: &[u8], position: usize, depth: usize) -> u8 {
     } else {
         input[index]
     }
-}
-
-#[inline(always)]
-fn same_rotation_prefix(input: &[u8], left: usize, right: usize, len: usize) -> bool {
-    (0..len).all(|depth| rotation_byte(input, left, depth) == rotation_byte(input, right, depth))
 }
 
 fn compare_rotation_chunked(
@@ -639,6 +639,20 @@ fn cyclic_prefix_word(input: &[u8], position: usize, word: usize) -> usize {
         (usize::from(rotation_byte(input, position, offset)) << 8)
             | usize::from(rotation_byte(input, position, offset + 1))
     }
+}
+
+#[inline(always)]
+fn cyclic_prefix_u32(input: &[u8], position: usize) -> u32 {
+    if position + 4 <= input.len() {
+        let word = unsafe { std::ptr::read_unaligned(input.as_ptr().add(position).cast::<u32>()) };
+        return u32::from_be(word);
+    }
+
+    let mut value = 0u32;
+    for offset in 0..4 {
+        value = (value << 8) | u32::from(rotation_byte(input, position, offset));
+    }
+    value
 }
 
 #[inline(always)]
