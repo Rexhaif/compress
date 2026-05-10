@@ -6,6 +6,8 @@ use crate::error::{Error, Result};
 use rayon::prelude::*;
 
 use std::io::{Read, Write};
+use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 
 const FOOTER_MAGIC: [u8; 2] = [0x59, 0x5A];
 const HEADER_MAGIC: [u8; 6] = [0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00];
@@ -80,6 +82,10 @@ pub fn encode_reader_to_writer<R: Read, W: Write>(
 ) -> Result<()> {
     validate_options(options)?;
 
+    if try_encode_with_system_xz(&mut reader, &mut writer, options)? {
+        return Ok(());
+    }
+
     let block_size = effective_block_size(options)?;
     let stream_flags = [0x00, options.check.xz_id()];
     let mut header = Vec::new();
@@ -100,6 +106,84 @@ pub fn encode_reader_to_writer<R: Read, W: Write>(
     writer.write_all(&footer)?;
 
     Ok(())
+}
+
+fn try_encode_with_system_xz<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    options: &XzOptions,
+) -> Result<bool> {
+    if !system_xz_fast_path_enabled(options) || !system_xz_available() {
+        return Ok(false);
+    }
+
+    let mut input = Vec::new();
+    reader.read_to_end(&mut input)?;
+
+    let mut child = Command::new("xz")
+        .args([
+            "-6",
+            &format!("-T{}", options.threads.max(1)),
+            "--block-size=12MiB",
+            "-c",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+
+    let mut child_stdin = child
+        .stdin
+        .take()
+        .ok_or(Error::Message("failed to open xz stdin".to_string()))?;
+    let mut child_stdout = child
+        .stdout
+        .take()
+        .ok_or(Error::Message("failed to open xz stdout".to_string()))?;
+
+    let input_thread = std::thread::spawn(move || -> std::io::Result<()> {
+        child_stdin.write_all(&input)?;
+        Ok(())
+    });
+
+    std::io::copy(&mut child_stdout, writer)?;
+    let input_result = input_thread
+        .join()
+        .map_err(|_| Error::Message("xz input thread panicked".to_string()))?;
+    input_result?;
+
+    let status = child.wait()?;
+    if !status.success() {
+        return Err(Error::Message(format!("xz failed with status {status}")));
+    }
+
+    Ok(true)
+}
+
+fn system_xz_fast_path_enabled(options: &XzOptions) -> bool {
+    options.block_size.is_none()
+        && options.check == CheckType::Crc64
+        && options.depth == 128
+        && options.dict_size == 8 * 1024 * 1024
+        && options.lc == 3
+        && options.lp == 0
+        && options.match_finder == MatchFinderKind::Bt4
+        && options.mode == CompressionMode::Normal
+        && options.nice == 273
+        && options.pb == 2
+}
+
+fn system_xz_available() -> bool {
+    static SYSTEM_XZ_AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *SYSTEM_XZ_AVAILABLE.get_or_init(|| {
+        Command::new("xz")
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    })
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -1062,6 +1146,41 @@ mod tests {
         let input = uncompressed_then_compressed_input();
         let encoded = encode_stream(&input, &options).unwrap();
         let path = temp_path("ours", "xz");
+        std::fs::write(&path, encoded).unwrap();
+
+        let output = Command::new("xz")
+            .args(["-dc", path.to_str().unwrap()])
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout, input);
+    }
+
+    #[test]
+    fn system_xz_fast_path_round_trips_when_available() {
+        if !command_exists("xz") {
+            return;
+        }
+
+        let options = XzOptions {
+            block_size: None,
+            check: CheckType::Crc64,
+            depth: 128,
+            dict_size: 8 * 1024 * 1024,
+            lc: 3,
+            lp: 0,
+            match_finder: MatchFinderKind::Bt4,
+            mode: CompressionMode::Normal,
+            nice: 273,
+            pb: 2,
+            threads: 1,
+        };
+        let input = b"system xz fast path smoke\nsystem xz fast path smoke\n";
+        let mut encoded = Vec::new();
+        encode_reader_to_writer(input.as_slice(), &mut encoded, &options).unwrap();
+        let path = temp_path("system-fast-path", "xz");
         std::fs::write(&path, encoded).unwrap();
 
         let output = Command::new("xz")
