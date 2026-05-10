@@ -24,6 +24,10 @@ const MATCH_LEN_MIN: usize = 2;
 const LEN_SYMBOLS: usize = MATCH_LEN_MAX - MATCH_LEN_MIN + 1;
 const MATCH_PRICE_REFRESH: u32 = 1 << 7;
 const EMPTY_MATCH: u32 = u32::MAX;
+// Bytes covered by an already chosen match only maintain the future search
+// tree, so capping their insert work buys speed with a small ratio tradeoff.
+const SKIP_INSERT_DEPTH_MAX: u32 = 16;
+const SKIP_INSERT_NICE_MAX: usize = 32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CompressionMode {
@@ -2547,12 +2551,25 @@ impl MatchFinderBt4 {
 
     fn insert(&mut self, input: &[u8], position: usize) {
         let candidate = self.update_hashes(input, position);
-        self.bt_insert(input, self.search(input, position), candidate, None, 3);
+        self.bt_insert(
+            input,
+            self.search(input, position),
+            candidate,
+            None,
+            3,
+            self.depth,
+        );
     }
 
     fn skip_insert(&mut self, input: &[u8], start: usize, end: usize) {
+        let depth = self.depth.min(SKIP_INSERT_DEPTH_MAX);
+        let nice = MATCH_LEN_MAX.min(SKIP_INSERT_NICE_MAX);
+
         for position in start..end {
-            self.insert(input, position);
+            let candidate = self.update_hashes(input, position);
+            let mut search = self.search(input, position);
+            search.nice = nice;
+            self.bt_insert(input, search, candidate, None, 3, depth);
         }
     }
 
@@ -2589,12 +2606,12 @@ impl MatchFinderBt4 {
 
         let best = matches.best().map_or(3, |best| best.length as usize).max(3);
         if best >= nice {
-            self.bt_insert(input, search, candidate, None, best);
+            self.bt_insert(input, search, candidate, None, best, self.depth);
             self.extend_best_match(input, position, end, matches);
             return;
         }
 
-        self.bt_insert(input, search, candidate, Some(matches), best);
+        self.bt_insert(input, search, candidate, Some(matches), best, self.depth);
     }
 
     fn peek_matches(
@@ -2699,6 +2716,7 @@ impl MatchFinderBt4 {
         mut candidate: u32,
         mut matches: Option<&mut MatchList>,
         mut best: usize,
+        depth: u32,
     ) {
         let current_pair = self.son_index(search.position);
         let current_cyclic = current_pair / 2;
@@ -2708,7 +2726,7 @@ impl MatchFinderBt4 {
         let mut len1 = 0usize;
         let emit_limit = match_limit(search.position, search.end, search.nice);
         let tree_limit = match_limit(search.position, input.len(), MATCH_LEN_MAX);
-        let mut depth = self.depth;
+        let mut depth = depth;
 
         loop {
             if candidate == EMPTY_MATCH
