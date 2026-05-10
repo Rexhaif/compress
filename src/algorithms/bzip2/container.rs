@@ -179,7 +179,13 @@ fn encode_fixed_chunks_as_streams_parallel(
 fn huffman_refinement_passes_for_fixed_chunk(block_size_100k: u8) -> usize {
     // Level-6 fixed chunks are intentionally smaller than the dynamic split.
     // Keep two refinement passes so the speed win stays inside the size budget.
-    if block_size_100k == 6 { 2 } else { 0 }
+    if block_size_100k == 6 {
+        2
+    } else if block_size_100k == 9 {
+        1
+    } else {
+        0
+    }
 }
 
 fn encode_raw_blocks_as_streams_parallel(

@@ -75,10 +75,10 @@ pub fn encode_with_huffman_passes(
     })
 }
 
-fn adaptive_huffman_refinement_passes(symbol_count: usize) -> usize {
-    // One refinement pass is enough for symbol-heavy blocks and saves encode
-    // time; smaller blocks keep two passes to stay inside the size budget.
-    if symbol_count >= 345_000 { 1 } else { 2 }
+fn adaptive_huffman_refinement_passes(_symbol_count: usize) -> usize {
+    // A second refinement pass keeps level-9 output inside the size budget
+    // while preserving the BWT/MTF speed advantage over reference encoders.
+    2
 }
 
 pub fn decode_after_magic(reader: &mut BitReader<'_>, block_size_100k: u8) -> Result<DecodedBlock> {
