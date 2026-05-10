@@ -85,15 +85,6 @@ fn try_encode_fixed_chunks_as_streams_parallel(
     }
 
     let pool = parallel_pool(threads)?;
-    if !fixed_chunks_fit_parallel(
-        input,
-        fixed_block_len,
-        block::max_block_len(options.block_size_100k),
-        &pool,
-    ) {
-        return Ok(None);
-    }
-
     match encode_fixed_chunks_as_streams_parallel(input, fixed_block_len, options, &pool) {
         Ok(streams) => Ok(Some(streams)),
         Err(Error::Format("bzip2 RLE block exceeds configured size")) => Ok(None),
@@ -160,37 +151,6 @@ fn fixed_chunk_len(block_size_100k: u8) -> usize {
     let max_block_len = block::max_block_len(block_size_100k);
     let margin = if block_size_100k == 9 { 2_000 } else { 944 };
     max_block_len.saturating_sub(margin)
-}
-
-fn fixed_chunks_fit_parallel(
-    input: &[u8],
-    chunk_len: usize,
-    max_encoded_len: usize,
-    pool: &rayon::ThreadPool,
-) -> bool {
-    pool.install(|| {
-        input
-            .par_chunks(chunk_len)
-            .all(|chunk| rle_encoded_len(chunk) <= max_encoded_len)
-    })
-}
-
-fn rle_encoded_len(input: &[u8]) -> usize {
-    let mut index = 0usize;
-    let mut encoded_len = 0usize;
-
-    while index < input.len() {
-        let byte = input[index];
-        let mut run = 1usize;
-        while index + run < input.len() && input[index + run] == byte {
-            run += 1;
-        }
-
-        encoded_len += block::rle_encoded_len_for_run(run);
-        index += run;
-    }
-
-    encoded_len
 }
 
 fn encode_fixed_chunks_as_streams_parallel(
