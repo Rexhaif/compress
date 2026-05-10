@@ -2701,6 +2701,7 @@ impl MatchFinderBt4 {
         mut best: usize,
     ) {
         let current_pair = self.son_index(search.position);
+        let current_cyclic = current_pair / 2;
         let mut ptr0 = current_pair + 1;
         let mut ptr1 = current_pair;
         let mut len0 = 0usize;
@@ -2721,7 +2722,8 @@ impl MatchFinderBt4 {
 
             depth -= 1;
             let candidate_position = candidate as usize;
-            let pair = self.son_index(candidate_position);
+            let distance = search.position - candidate_position;
+            let pair = self.son_index_at_distance(current_cyclic, distance);
             let mut length = len0.min(len1);
 
             // `length < tree_limit` bounds both probes; candidates are always
@@ -2789,6 +2791,7 @@ impl MatchFinderBt4 {
         matches: &mut MatchList,
         mut best: usize,
     ) {
+        let current_cyclic = self.son_index(search.position) / 2;
         let mut len0 = 0usize;
         let mut len1 = 0usize;
         let emit_limit = match_limit(search.position, search.end, search.nice);
@@ -2801,7 +2804,8 @@ impl MatchFinderBt4 {
         {
             depth -= 1;
             let candidate_position = candidate as usize;
-            let pair = self.son_index(candidate_position);
+            let distance = search.position - candidate_position;
+            let pair = self.son_index_at_distance(current_cyclic, distance);
             let mut length = len0.min(len1);
 
             // `length < tree_limit` bounds both probes; candidates are always
@@ -2853,6 +2857,18 @@ impl MatchFinderBt4 {
 
     fn son_index(&self, position: usize) -> usize {
         (position % self.cyclic_size) * 2
+    }
+
+    fn son_index_at_distance(&self, current_cyclic: usize, distance: usize) -> usize {
+        debug_assert!(distance < self.cyclic_size);
+
+        let cyclic = if current_cyclic >= distance {
+            current_cyclic - distance
+        } else {
+            current_cyclic + self.cyclic_size - distance
+        };
+
+        cyclic * 2
     }
 
     fn test_short_candidate(
