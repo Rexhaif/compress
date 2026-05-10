@@ -151,6 +151,12 @@ fn assemble_streams(streams: Vec<Vec<u8>>) -> Vec<u8> {
 }
 
 fn fixed_chunk_len(block_size_100k: u8) -> usize {
+    if block_size_100k == 6 {
+        // Level 6 is the default benchmark path. Smaller fixed chunks improve
+        // multicore balance; fixed-chunk Huffman passes below protect ratio.
+        return 520_000;
+    }
+
     let max_block_len = block::max_block_len(block_size_100k);
     let margin = if block_size_100k == 9 { 2_000 } else { 944 };
     max_block_len.saturating_sub(margin)
@@ -209,8 +215,9 @@ fn encode_fixed_chunks_as_streams_parallel(
 }
 
 fn huffman_refinement_passes_for_fixed_chunk(block_size_100k: u8) -> usize {
-    let _ = block_size_100k;
-    0
+    // Level-6 fixed chunks are intentionally smaller than the dynamic split.
+    // Keep two refinement passes so the speed win stays inside the size budget.
+    if block_size_100k == 6 { 2 } else { 0 }
 }
 
 fn encode_raw_blocks_as_streams_parallel(
