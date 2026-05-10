@@ -258,7 +258,7 @@ fn cyclic_msd_order(input: &[u8]) -> Vec<u32> {
     let n = input.len();
     let mut order: Vec<u32> = (0..n as u32).collect();
     let mut scratch = uninit_u32_vec(n);
-    let prefix_len = n.min(3);
+    let prefix_len = n.min(4);
 
     for depth in (0..prefix_len).rev() {
         let mut counts = [0usize; 256];
@@ -299,10 +299,10 @@ fn cyclic_msd_order(input: &[u8]) -> Vec<u32> {
         let len = end - start;
         if len > 1 {
             if len <= 32 {
-                insertion_sort_rotations(&mut order[start..end], input, prefix_len);
+                insertion_sort_rotations_chunked(&mut order[start..end], input, prefix_len);
             } else {
                 order[start..end].sort_unstable_by(|&left, &right| {
-                    compare_rotation(input, left as usize, right as usize, prefix_len)
+                    compare_rotation_chunked(input, left as usize, right as usize, prefix_len)
                 });
             }
         }
@@ -325,46 +325,6 @@ fn rotation_byte(input: &[u8], position: usize, depth: usize) -> u8 {
 #[inline(always)]
 fn same_rotation_prefix(input: &[u8], left: usize, right: usize, len: usize) -> bool {
     (0..len).all(|depth| rotation_byte(input, left, depth) == rotation_byte(input, right, depth))
-}
-
-fn insertion_sort_rotations(order: &mut [u32], input: &[u8], depth: usize) {
-    for index in 1..order.len() {
-        let value = order[index];
-        let mut slot = index;
-        while slot > 0
-            && compare_rotation(input, value as usize, order[slot - 1] as usize, depth).is_lt()
-        {
-            order[slot] = order[slot - 1];
-            slot -= 1;
-        }
-        order[slot] = value;
-    }
-}
-
-fn compare_rotation(input: &[u8], left: usize, right: usize, depth: usize) -> std::cmp::Ordering {
-    let n = input.len();
-    for offset in depth..n {
-        let left_sum = left + offset;
-        let right_sum = right + offset;
-        let left_index = if left_sum >= n {
-            left_sum - n
-        } else {
-            left_sum
-        };
-        let right_index = if right_sum >= n {
-            right_sum - n
-        } else {
-            right_sum
-        };
-        let left_byte = input[left_index];
-        let right_byte = input[right_index];
-        match left_byte.cmp(&right_byte) {
-            std::cmp::Ordering::Equal => {}
-            ordering => return ordering,
-        }
-    }
-
-    left.cmp(&right)
 }
 
 fn compare_rotation_chunked(
