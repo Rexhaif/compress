@@ -223,3 +223,23 @@ real parser and match finder are closer, revisit preset compatibility.
 5. Replace hash-chain `Bt4` with true cyclic binary tree storage.
 6. Re-align presets with liblzma once parser/finder behavior is closer.
 7. Re-run enwik8 and random/incompressible interop benchmarks after each step.
+
+## Current Tuning Notes
+
+Recent level-6 checks show the remaining ratio gap is not primarily LZMA2
+fallback policy. On `silesia-20m`, only 196,608 of 20,000,000 input bytes were
+stored as uncompressed LZMA2 packets; on `enwik8`, none were. The gap is coming
+from parser and match-selection quality inside compressed chunks.
+
+Rejected current-state knobs:
+
+- Threaded `dict=16M` improves size but misses the T8 speed gate on both
+  `enwik8` and full Silesia.
+- Threaded `--block-size=34M` is slower and does not recover useful size.
+- Reference-style `nice=64`, with either explicit depth or automatic depth,
+  grows output and does not buy speed in this encoder.
+- The existing `mode=optimal` path is still worse in both speed and size on
+  `silesia-20m` and `enwik8`; it should not become the default without parser
+  fixes.
+- LZMA2 fallback/chunk-size changes are lower value than parser work unless new
+  packet audits show a much larger uncompressed-payload share.
