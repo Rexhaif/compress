@@ -517,7 +517,10 @@ fn refine_cyclic_order(
             } else {
                 (position + n - length) as u32
             };
-            counts[classes_by_pos[shifted_position as usize] as usize] += 1;
+            unsafe {
+                let class = *classes_by_pos.get_unchecked(shifted_position as usize) as usize;
+                *counts.get_unchecked_mut(class) += 1;
+            }
         }
         for index in 1..classes {
             counts[index] += counts[index - 1];
@@ -529,30 +532,41 @@ fn refine_cyclic_order(
             } else {
                 (position + n - length) as u32
             };
-            let class = classes_by_pos[shifted_position as usize] as usize;
-            counts[class] -= 1;
-            next_order[counts[class] as usize] = shifted_position;
+            unsafe {
+                let class = *classes_by_pos.get_unchecked(shifted_position as usize) as usize;
+                let count = counts.get_unchecked_mut(class);
+                *count -= 1;
+                *next_order.get_unchecked_mut(*count as usize) = shifted_position;
+            }
         }
         std::mem::swap(&mut order, &mut next_order);
 
-        next_classes[order[0] as usize] = 0;
+        unsafe {
+            *next_classes.get_unchecked_mut(order[0] as usize) = 0;
+        }
         let mut next_class_count = 1usize;
         for index in 1..n {
-            let current_position = order[index] as usize;
-            let previous_position = order[index - 1] as usize;
-            let current = (
-                classes_by_pos[current_position],
-                classes_by_pos[wrapping_add(current_position, length, n)],
-            );
-            let previous = (
-                classes_by_pos[previous_position],
-                classes_by_pos[wrapping_add(previous_position, length, n)],
-            );
+            let current_position = unsafe { *order.get_unchecked(index) as usize };
+            let previous_position = unsafe { *order.get_unchecked(index - 1) as usize };
+            let current = unsafe {
+                (
+                    *classes_by_pos.get_unchecked(current_position),
+                    *classes_by_pos.get_unchecked(wrapping_add(current_position, length, n)),
+                )
+            };
+            let previous = unsafe {
+                (
+                    *classes_by_pos.get_unchecked(previous_position),
+                    *classes_by_pos.get_unchecked(wrapping_add(previous_position, length, n)),
+                )
+            };
 
             if current != previous {
                 next_class_count += 1;
             }
-            next_classes[current_position] = (next_class_count - 1) as u32;
+            unsafe {
+                *next_classes.get_unchecked_mut(current_position) = (next_class_count - 1) as u32;
+            }
         }
 
         if next_class_count == classes {
