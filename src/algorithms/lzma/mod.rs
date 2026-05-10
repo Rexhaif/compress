@@ -2645,6 +2645,29 @@ impl MatchFinderBt4 {
     }
 
     fn update_hashes(&mut self, input: &[u8], position: usize) -> u32 {
+        if position + 4 <= input.len() {
+            let word =
+                unsafe { std::ptr::read_unaligned(input.as_ptr().add(position).cast::<u32>()) };
+            let word = u32::from_le(word);
+            let byte0 = (word & 0xFF) as u8;
+            let byte1 = ((word >> 8) & 0xFF) as u8;
+            let byte2 = ((word >> 16) & 0xFF) as u8;
+            let byte3 = (word >> 24) as u8;
+            let hash2 = usize::from(byte0) | (usize::from(byte1) << 8);
+            self.hash2[hash2] = position as u32;
+
+            let temp = lz_hash_table(byte0) ^ u32::from(byte1);
+            let hash23 = temp ^ (u32::from(byte2) << 8);
+            let hash3 = (hash23 & 0xFFFF) as usize;
+            self.hash3[hash3] = position as u32;
+
+            let hash4 = (hash23 ^ (lz_hash_table(byte3) << 5)) as usize & self.hash4_mask;
+            let candidate = self.hash4[hash4];
+            self.hash4[hash4] = position as u32;
+
+            return candidate;
+        }
+
         if position + 2 <= input.len() {
             let byte0 = input[position];
             let byte1 = input[position + 1];
@@ -2656,17 +2679,6 @@ impl MatchFinderBt4 {
                 let byte2 = input[position + 2];
                 let hash3 = ((temp ^ (u32::from(byte2) << 8)) & 0xFFFF) as usize;
                 self.hash3[hash3] = position as u32;
-
-                if position + 4 <= input.len() {
-                    let byte3 = input[position + 3];
-                    let hash4 = (temp ^ (u32::from(byte2) << 8) ^ (lz_hash_table(byte3) << 5))
-                        as usize
-                        & self.hash4_mask;
-                    let candidate = self.hash4[hash4];
-                    self.hash4[hash4] = position as u32;
-
-                    return candidate;
-                }
             }
         }
 
