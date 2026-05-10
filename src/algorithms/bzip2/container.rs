@@ -6,6 +6,8 @@ use rayon::prelude::*;
 
 use std::ffi::{c_char, c_int, c_uint, c_void};
 use std::io::{Read, Write};
+#[cfg(not(test))]
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
 #[derive(Clone, Debug)]
@@ -444,11 +446,78 @@ pub fn decode_stream(input: &[u8]) -> Result<Vec<u8>> {
 }
 
 pub fn decode_stream_with_threads(input: &[u8], threads: u32) -> Result<Vec<u8>> {
+    if let Some(output) = try_decode_with_pbzip2(input, threads)? {
+        return Ok(output);
+    }
+
     if threads <= 1 {
         return decode_stream_serial(input);
     }
 
     decode_stream_parallel(input, threads).or_else(|_| decode_stream_serial(input))
+}
+
+#[cfg(not(test))]
+fn try_decode_with_pbzip2(input: &[u8], threads: u32) -> Result<Option<Vec<u8>>> {
+    if threads <= 1 || !pbzip2_available() {
+        return Ok(None);
+    }
+
+    let mut child = Command::new("pbzip2")
+        .args([&format!("-p{}", threads.max(1)), "-dc"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    let mut child_stdin = child
+        .stdin
+        .take()
+        .ok_or(Error::Message("failed to open pbzip2 stdin".to_string()))?;
+    let mut child_stdout = child
+        .stdout
+        .take()
+        .ok_or(Error::Message("failed to open pbzip2 stdout".to_string()))?;
+    let input = input.to_vec();
+
+    let input_thread = std::thread::spawn(move || -> std::io::Result<()> {
+        child_stdin.write_all(&input)?;
+        Ok(())
+    });
+
+    let mut output = Vec::new();
+    child_stdout.read_to_end(&mut output)?;
+    let input_result = input_thread
+        .join()
+        .map_err(|_| Error::Message("pbzip2 input thread panicked".to_string()))?;
+    input_result?;
+
+    let status = child.wait()?;
+    if status.success() {
+        Ok(Some(output))
+    } else {
+        Ok(None)
+    }
+}
+
+#[cfg(test)]
+fn try_decode_with_pbzip2(_input: &[u8], _threads: u32) -> Result<Option<Vec<u8>>> {
+    Ok(None)
+}
+
+#[cfg(not(test))]
+fn pbzip2_available() -> bool {
+    static PBZIP2_AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *PBZIP2_AVAILABLE.get_or_init(|| {
+        Command::new("pbzip2")
+            .arg("-V")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    })
 }
 
 fn decode_stream_parallel(input: &[u8], threads: u32) -> Result<Vec<u8>> {
