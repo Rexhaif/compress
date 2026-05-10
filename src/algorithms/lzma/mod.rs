@@ -3056,11 +3056,18 @@ fn match_length_from(
     let limit = match_limit(position, end, nice);
     let mut length = start;
 
+    #[cfg(target_arch = "x86_64")]
+    {
+        // x86_64 guarantees SSE2, and these probes are already bounded by
+        // `limit`, so unaligned vector loads are valid here.
+        length = unsafe { match_length_from_sse2(input, position, candidate, limit, length) };
+    }
+
     while length + 8 <= limit {
-        let current = read_u64_unaligned(input, position + length);
-        let previous = read_u64_unaligned(input, candidate + length);
-        if current != previous {
-            break;
+        let difference = read_u64_unaligned(input, position + length)
+            ^ read_u64_unaligned(input, candidate + length);
+        if difference != 0 {
+            return length + first_mismatch_u64(difference);
         }
 
         length += 8;
@@ -3073,12 +3080,55 @@ fn match_length_from(
     length
 }
 
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn match_length_from_sse2(
+    input: &[u8],
+    position: usize,
+    candidate: usize,
+    limit: usize,
+    mut length: usize,
+) -> usize {
+    use core::arch::x86_64::{__m128i, _mm_cmpeq_epi8, _mm_loadu_si128, _mm_movemask_epi8};
+
+    while length + 16 <= limit {
+        let current =
+            unsafe { _mm_loadu_si128(input.as_ptr().add(position + length).cast::<__m128i>()) };
+        let previous =
+            unsafe { _mm_loadu_si128(input.as_ptr().add(candidate + length).cast::<__m128i>()) };
+        let equal = _mm_movemask_epi8(_mm_cmpeq_epi8(current, previous)) as u32;
+        let different = !equal & 0xFFFF;
+        if different != 0 {
+            return length + different.trailing_zeros() as usize;
+        }
+
+        length += 16;
+    }
+
+    length
+}
+
 fn read_u64_unaligned(input: &[u8], offset: usize) -> u64 {
     debug_assert!(offset + 8 <= input.len());
 
     // The match finder probes arbitrary byte offsets, so aligned loads cannot
     // be assumed. Bounds are established by match_length_from before each call.
     unsafe { std::ptr::read_unaligned(input.as_ptr().add(offset).cast::<u64>()) }
+}
+
+#[inline(always)]
+fn first_mismatch_u64(difference: u64) -> usize {
+    debug_assert_ne!(difference, 0);
+
+    #[cfg(target_endian = "little")]
+    {
+        difference.trailing_zeros() as usize / 8
+    }
+
+    #[cfg(target_endian = "big")]
+    {
+        difference.leading_zeros() as usize / 8
+    }
 }
 
 fn match_limit(position: usize, end: usize, nice: usize) -> usize {
@@ -3245,4 +3295,46 @@ fn state_update_repetition(state: u32) -> u32 {
 
 fn state_update_short_rep(state: u32) -> u32 {
     if state < 7 { 9 } else { 11 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn paired_input(len: usize) -> Vec<u8> {
+        let mut input = vec![0; len * 2];
+        for index in 0..len {
+            input[index] = ((index * 37 + 11) & 0xFF) as u8;
+            input[len + index] = input[index];
+        }
+
+        input
+    }
+
+    #[test]
+    fn match_length_stops_at_first_vector_mismatch() {
+        let mut input = paired_input(96);
+        input[96 + 37] ^= 0x40;
+
+        assert_eq!(match_length(&input, 96, 0, input.len(), MATCH_LEN_MAX), 37);
+        assert_eq!(
+            match_length_from(&input, 96, 0, input.len(), MATCH_LEN_MAX, 17),
+            37
+        );
+    }
+
+    #[test]
+    fn match_length_honors_nice_limit() {
+        let input = paired_input(96);
+
+        assert_eq!(match_length(&input, 96, 0, input.len(), 41), 41);
+    }
+
+    #[test]
+    fn match_length_handles_tail_mismatch() {
+        let mut input = paired_input(24);
+        input[24 + 21] ^= 0x01;
+
+        assert_eq!(match_length(&input, 24, 0, input.len(), MATCH_LEN_MAX), 21);
+    }
 }

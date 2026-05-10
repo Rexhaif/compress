@@ -115,6 +115,27 @@ fn move_to_front(mtf: &mut [u8; 256], positions: &mut [u8; 256], byte: u8, index
 }
 
 fn encode_with_scan(input: &[u8], used: [bool; 256], used_symbols: Vec<u8>) -> EncodedMtf {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            return encode_with_scan_impl(input, used, used_symbols, |mtf, byte| unsafe {
+                find_mtf_index_avx2(mtf, byte)
+            });
+        }
+    }
+
+    encode_with_scan_impl(input, used, used_symbols, find_mtf_index)
+}
+
+fn encode_with_scan_impl<F>(
+    input: &[u8],
+    used: [bool; 256],
+    used_symbols: Vec<u8>,
+    mut find_index: F,
+) -> EncodedMtf
+where
+    F: FnMut(&[u8; 256], u8) -> usize,
+{
     let mut mtf = [0u8; 256];
     mtf[..used_symbols.len()].copy_from_slice(&used_symbols);
     let mut symbols = Vec::with_capacity(input.len() + 1);
@@ -126,7 +147,7 @@ fn encode_with_scan(input: &[u8], used: [bool; 256], used_symbols: Vec<u8>) -> E
             continue;
         }
 
-        let index = find_mtf_index(&mtf, byte);
+        let index = find_index(&mtf, byte);
 
         flush_zero_run(zero_run, &mut symbols);
         zero_run = 0;
@@ -149,8 +170,8 @@ fn encode_with_scan(input: &[u8], used: [bool; 256], used_symbols: Vec<u8>) -> E
 fn find_mtf_index(mtf: &[u8; 256], byte: u8) -> usize {
     #[cfg(target_arch = "x86_64")]
     {
-        // x86_64 guarantees SSE2. Compare 16 MTF entries at a time and use the
-        // equality mask to locate the first match.
+        // x86_64 guarantees SSE2. The AVX2 path is selected once per block in
+        // encode_with_scan so this fallback stays branch-free in the hot loop.
         return unsafe { find_mtf_index_sse2(mtf, byte) };
     }
 
@@ -178,6 +199,27 @@ fn find_mtf_index_word(mtf: &[u8; 256], byte: u8) -> usize {
             return offset + (matches.trailing_zeros() as usize / 8);
         }
         offset += 8;
+    }
+
+    unreachable!("MTF table contains every symbol in the block alphabet")
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn find_mtf_index_avx2(mtf: &[u8; 256], byte: u8) -> usize {
+    use core::arch::x86_64::{
+        __m256i, _mm256_cmpeq_epi8, _mm256_loadu_si256, _mm256_movemask_epi8, _mm256_set1_epi8,
+    };
+
+    let needle = _mm256_set1_epi8(byte as i8);
+    let mut offset = 0usize;
+    while offset < mtf.len() {
+        let chunk = unsafe { _mm256_loadu_si256(mtf.as_ptr().add(offset).cast::<__m256i>()) };
+        let matches = _mm256_movemask_epi8(_mm256_cmpeq_epi8(chunk, needle)) as u32;
+        if matches != 0 {
+            return offset + matches.trailing_zeros() as usize;
+        }
+        offset += 32;
     }
 
     unreachable!("MTF table contains every symbol in the block alphabet")
@@ -275,14 +317,34 @@ pub fn decode(symbols: &[u16], used_symbols: &[u8], output_limit: usize) -> Resu
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn mtf_round_trips_repetitive_input() {
         let input = b"banana banana banana";
-        let encoded = super::encode(input);
+        let encoded = encode(input);
         let eob = encoded.used_symbols.len() as u16 + 1;
         let body = &encoded.symbols[..encoded.symbols.len() - 1];
         assert_eq!(*encoded.symbols.last().unwrap(), eob);
-        let decoded = super::decode(body, &encoded.used_symbols, input.len()).unwrap();
+        let decoded = decode(body, &encoded.used_symbols, input.len()).unwrap();
         assert_eq!(decoded, input);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn avx2_mtf_scan_matches_scalar_positions_when_available() {
+        if !std::arch::is_x86_feature_detected!("avx2") {
+            return;
+        }
+
+        let mut mtf = [0u8; 256];
+        for (index, slot) in mtf.iter_mut().enumerate() {
+            *slot = (255 - index) as u8;
+        }
+
+        for (expected, &byte) in mtf.iter().enumerate() {
+            let actual = unsafe { find_mtf_index_avx2(&mtf, byte) };
+            assert_eq!(actual, expected);
+        }
     }
 }
