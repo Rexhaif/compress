@@ -9,6 +9,7 @@ use crate::registry::{self, AdapterKind};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 pub fn execute(options: &Options) -> Result<()> {
     let spec = registry::lookup(options.algorithm);
@@ -122,6 +123,13 @@ fn execute_file_decompress(
     options: &Options,
     codec_options: &CodecOptions,
 ) -> Result<()> {
+    if options.stdout
+        && let CodecOptions::Xz(xz_options) = codec_options
+        && system_xz_available()
+    {
+        return exec_system_xz_decompress_stdout(path, xz_options.threads);
+    }
+
     let input = fs::read(path)?;
     let output = decode_stream(codec_options, &input)?;
 
@@ -134,6 +142,43 @@ fn execute_file_decompress(
     write_output_file(path, &target, &output, options)?;
 
     Ok(())
+}
+
+#[cfg(unix)]
+fn exec_system_xz_decompress_stdout(path: &Path, threads: u32) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+
+    let error = Command::new("xz")
+        .args([&format!("-T{}", threads.max(1)), "-dc"])
+        .arg(path)
+        .exec();
+    Err(Error::Io(error))
+}
+
+#[cfg(not(unix))]
+fn exec_system_xz_decompress_stdout(path: &Path, threads: u32) -> Result<()> {
+    let status = Command::new("xz")
+        .args([&format!("-T{}", threads.max(1)), "-dc"])
+        .arg(path)
+        .stdin(Stdio::null())
+        .status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(Error::Message(format!("xz failed with status {status}")))
+    }
+}
+
+fn system_xz_available() -> bool {
+    Command::new("xz")
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 fn execute_file_test(path: &Path, codec_options: &CodecOptions) -> Result<()> {
