@@ -709,14 +709,22 @@ pub fn inverse(last_column: &[u8], primary_index: usize) -> Result<Vec<u8>> {
         let byte_index = usize::from(byte);
         let slot = starts[byte_index] + seen[byte_index];
         seen[byte_index] += 1;
-        next[slot] = index as u32;
+        // `slot` is formed from the cumulative byte histogram and occurrence
+        // count, so every slot in `0..n` is written exactly once.
+        unsafe {
+            *next.get_unchecked_mut(slot) = index as u32;
+        }
     }
 
-    let mut output = Vec::with_capacity(n);
+    let mut output = uninit_u8_vec(n);
     let mut position = primary_index;
-    for _ in 0..n {
-        position = next[position] as usize;
-        output.push(last_column[position]);
+    for slot in 0..n {
+        // `next` contains only indices produced from `last_column`, and the
+        // primary index was validated above.
+        unsafe {
+            position = *next.get_unchecked(position) as usize;
+            *output.get_unchecked_mut(slot) = *last_column.get_unchecked(position);
+        }
     }
 
     Ok(output)
