@@ -1755,6 +1755,11 @@ impl LzmaDecoder {
             return Ok(());
         }
 
+        if length <= distance && length >= 4 {
+            output.extend_from_within(start..start + length);
+            return Ok(());
+        }
+
         for index in 0..length {
             output.push(output[start + index]);
         }

@@ -203,7 +203,13 @@ fn decode_parsed_block(
     record: IndexRecord,
     check: CheckType,
 ) -> Result<Vec<u8>> {
-    let block_output = lzma2::decode(block.compressed_data, block.dict_size)?;
+    let expected_size = usize::try_from(record.uncompressed_size)
+        .map_err(|_| Error::Format("xz block uncompressed size is too large"))?;
+    let block_output = lzma2::decode_with_capacity(
+        block.compressed_data,
+        block.dict_size,
+        expected_size.min(64 * 1024 * 1024),
+    )?;
 
     if block_output.len() as u64 != record.uncompressed_size {
         return Err(Error::Format("xz block uncompressed size mismatch"));

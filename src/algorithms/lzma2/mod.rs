@@ -390,6 +390,10 @@ struct ChunkPlan {
 }
 
 pub fn decode(data: &[u8], dict_size: u32) -> Result<Vec<u8>> {
+    decode_with_capacity(data, dict_size, 0)
+}
+
+pub fn decode_with_capacity(data: &[u8], dict_size: u32, capacity: usize) -> Result<Vec<u8>> {
     let mut decoder = Lzma2Decoder {
         data,
         dict_size,
@@ -398,7 +402,7 @@ pub fn decode(data: &[u8], dict_size: u32) -> Result<Vec<u8>> {
         lzma: None,
         need_dictionary_reset: true,
         need_properties: true,
-        output: Vec::new(),
+        output: Vec::with_capacity(capacity),
     };
 
     decoder.decode()
