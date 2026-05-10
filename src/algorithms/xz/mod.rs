@@ -140,8 +140,7 @@ pub fn decode_stream_with_threads(input: &[u8], threads: u32) -> Result<Vec<u8>>
             .collect::<Result<Vec<_>>>()?
     };
     let total_size: usize = decoded_blocks.iter().map(Vec::len).sum();
-    let mut output = Vec::new();
-    output.reserve(total_size);
+    let mut output = Vec::with_capacity(total_size);
 
     for block_output in decoded_blocks {
         output.extend_from_slice(&block_output);

@@ -3087,6 +3087,24 @@ fn match_length_from(
     let limit = match_limit(position, end, nice);
     let mut length = start;
 
+    if length + 8 <= limit {
+        let difference = read_u64_unaligned(input, position + length)
+            ^ read_u64_unaligned(input, candidate + length);
+        if difference != 0 {
+            return length + first_mismatch_u64(difference);
+        }
+
+        length += 8;
+    } else if length + 4 <= limit {
+        let difference = read_u32_unaligned(input, position + length)
+            ^ read_u32_unaligned(input, candidate + length);
+        if difference != 0 {
+            return length + first_mismatch_u32(difference);
+        }
+
+        length += 4;
+    }
+
     #[cfg(target_arch = "x86_64")]
     {
         // x86_64 guarantees SSE2, and these probes are already bounded by
@@ -3109,6 +3127,15 @@ fn match_length_from(
     }
 
     length
+}
+
+#[inline(always)]
+fn read_u32_unaligned(input: &[u8], offset: usize) -> u32 {
+    debug_assert!(offset + 4 <= input.len());
+
+    // The match finder probes arbitrary byte offsets, so aligned loads cannot
+    // be assumed. Bounds are established by match_length_from before each call.
+    unsafe { std::ptr::read_unaligned(input.as_ptr().add(offset).cast::<u32>()) }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -3146,6 +3173,21 @@ fn read_u64_unaligned(input: &[u8], offset: usize) -> u64 {
     // The match finder probes arbitrary byte offsets, so aligned loads cannot
     // be assumed. Bounds are established by match_length_from before each call.
     unsafe { std::ptr::read_unaligned(input.as_ptr().add(offset).cast::<u64>()) }
+}
+
+#[inline(always)]
+fn first_mismatch_u32(difference: u32) -> usize {
+    debug_assert_ne!(difference, 0);
+
+    #[cfg(target_endian = "little")]
+    {
+        difference.trailing_zeros() as usize / 8
+    }
+
+    #[cfg(target_endian = "big")]
+    {
+        difference.leading_zeros() as usize / 8
+    }
 }
 
 #[inline(always)]
