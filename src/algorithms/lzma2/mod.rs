@@ -25,6 +25,7 @@ pub struct Lzma2Options {
 pub fn encode(data: &[u8], options: &Lzma2Options) -> Result<Vec<u8>> {
     let mut encoded = Vec::with_capacity(data.len() / 2 + 32);
     let mut encoder = LzmaEncoder::new(lzma_options(options), data.len());
+    let mut range_output = Vec::with_capacity(LZMA2_PACKED_CHUNK_MAX);
     let mut state = Lzma2EncodeState::new();
     let mut offset = 0usize;
 
@@ -32,7 +33,15 @@ pub fn encode(data: &[u8], options: &Lzma2Options) -> Result<Vec<u8>> {
         let plan = plan_chunk(data, offset, options);
         let end = candidate_end(data, offset, plan.unpack_size);
         let packet = if plan.attempt_compression {
-            build_packet(&mut encoder, data, offset, end, options, state)?
+            build_packet(
+                &mut encoder,
+                &mut range_output,
+                data,
+                offset,
+                end,
+                options,
+                state,
+            )?
         } else {
             build_uncompressed_packet(&mut encoder, data, offset, end, state)
         };
@@ -124,6 +133,7 @@ fn compressibility_score(data: &[u8], start: usize) -> usize {
 
 fn build_packet(
     encoder: &mut LzmaEncoder,
+    range_output: &mut Vec<u8>,
     data: &[u8],
     start: usize,
     end: usize,
@@ -145,12 +155,19 @@ fn build_packet(
     let unpack_size = end - start;
     let mut bytes = Vec::new();
     let mut next_state = state;
-    let compressed =
-        encoder.encode_range_limited(data, start, end, dictionary_start, LZMA2_PACKED_CHUNK_MAX)?;
-    let compressed_packet = if let Some(compressed) = compressed.as_ref() {
-        compressed.len() + compressed_header_size(&state) < uncompressed_fallback_size(unpack_size)
+    let compressed = encoder.encode_range_limited(
+        data,
+        start,
+        end,
+        dictionary_start,
+        LZMA2_PACKED_CHUNK_MAX,
+        range_output,
+    )?;
+    let compressed_packet = if compressed {
+        range_output.len() + compressed_header_size(&state)
+            < uncompressed_fallback_size(unpack_size)
             && verify_lzma_chunk(
-                compressed,
+                range_output,
                 data,
                 start,
                 end,
@@ -165,7 +182,7 @@ fn build_packet(
     if compressed_packet {
         append_lzma_chunk(
             &mut bytes,
-            compressed.as_ref().expect("compressed packet was selected"),
+            range_output,
             unpack_size,
             options.properties,
             &mut next_state,

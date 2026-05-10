@@ -228,8 +228,16 @@ impl LzmaEncoder {
         end: usize,
         dictionary_start: usize,
         output_limit: usize,
-    ) -> Result<Option<Vec<u8>>> {
-        self.encode_range_inner(input, start, end, dictionary_start, Some(output_limit))
+        output: &mut Vec<u8>,
+    ) -> Result<bool> {
+        self.encode_range_inner(
+            input,
+            start,
+            end,
+            dictionary_start,
+            Some(output_limit),
+            output,
+        )
     }
 
     pub(crate) fn observe_uncompressed_range(
@@ -255,8 +263,9 @@ impl LzmaEncoder {
         end: usize,
         dictionary_start: usize,
         output_limit: Option<usize>,
-    ) -> Result<Option<Vec<u8>>> {
-        let mut range = RangeEncoder::new(output_limit);
+        output: &mut Vec<u8>,
+    ) -> Result<bool> {
+        let mut range = RangeEncoder::new(output_limit, output);
         let mut position = start;
         self.dictionary_start = dictionary_start;
 
@@ -264,7 +273,7 @@ impl LzmaEncoder {
             let decision = self.parse_position(input, position, end);
             self.encode_decision(&mut range, input, position, decision)?;
             if range.output_limit_reached() {
-                return Ok(None);
+                return Ok(false);
             }
 
             position += decision.length as usize;
@@ -1852,25 +1861,28 @@ impl LenDecoder {
     }
 }
 
-struct RangeEncoder {
+struct RangeEncoder<'a> {
     cache: u8,
     cache_size: u32,
     low: u64,
-    output: Vec<u8>,
+    output: &'a mut Vec<u8>,
     output_limit: Option<usize>,
     output_limit_reached: bool,
     range: u32,
 }
 
-impl RangeEncoder {
-    fn new(output_limit: Option<usize>) -> RangeEncoder {
-        let capacity = output_limit.unwrap_or(0);
+impl<'a> RangeEncoder<'a> {
+    fn new(output_limit: Option<usize>, output: &'a mut Vec<u8>) -> RangeEncoder<'a> {
+        output.clear();
+        if let Some(limit) = output_limit {
+            output.reserve(limit.saturating_sub(output.capacity()));
+        }
 
         RangeEncoder {
             cache: 0,
             cache_size: 1,
             low: 0,
-            output: Vec::with_capacity(capacity),
+            output,
             output_limit,
             output_limit_reached: false,
             range: u32::MAX,
@@ -1933,15 +1945,15 @@ impl RangeEncoder {
         }
     }
 
-    fn finish(mut self) -> Option<Vec<u8>> {
+    fn finish(mut self) -> bool {
         for _ in 0..5 {
             self.shift_low();
             if self.output_limit_reached() {
-                return None;
+                return false;
             }
         }
 
-        Some(self.output)
+        true
     }
 
     fn output_limit_reached(&self) -> bool {
