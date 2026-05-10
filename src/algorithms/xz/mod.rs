@@ -13,7 +13,7 @@ const FOOTER_MAGIC: [u8; 2] = [0x59, 0x5A];
 const HEADER_MAGIC: [u8; 6] = [0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00];
 const LZMA2_FILTER_ID: u64 = 0x21;
 const PARALLEL_BLOCK_SIZE_LEVEL_0_TO_3: u64 = 8 * 1024 * 1024;
-const PARALLEL_BLOCK_SIZE_LEVEL_4_TO_6: u64 = 5 * 1024 * 1024;
+const PARALLEL_BLOCK_SIZE_LEVEL_4_TO_6: u64 = 8 * 1024 * 1024;
 const PARALLEL_BLOCK_SIZE_LEVEL_7_TO_9: u64 = 32 * 1024 * 1024;
 const PARALLEL_BATCH_MAX_BLOCKS: usize = 64;
 
@@ -1094,7 +1094,7 @@ mod tests {
         assert_eq!(default_block_size(&options), 24 * 1024 * 1024);
 
         options.threads = 4;
-        assert_eq!(default_block_size(&options), 5 * 1024 * 1024);
+        assert_eq!(default_block_size(&options), 8 * 1024 * 1024);
     }
 
     #[test]
