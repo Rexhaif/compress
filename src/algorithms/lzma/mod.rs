@@ -221,54 +221,6 @@ impl LzmaEncoder {
         self.reset_state();
     }
 
-    pub(crate) fn snapshot_state(&self) -> LzmaEncoderState {
-        LzmaEncoderState {
-            align_price_count: self.align_price_count,
-            align_prices: self.align_prices,
-            dist_prices: self.dist_prices.clone(),
-            dist_slot_prices: self.dist_slot_prices.clone(),
-            is_match: self.is_match.clone(),
-            is_rep: self.is_rep,
-            is_rep_g0: self.is_rep_g0,
-            is_rep_g1: self.is_rep_g1,
-            is_rep_g2: self.is_rep_g2,
-            is_rep0_long: self.is_rep0_long.clone(),
-            len_encoder: self.len_encoder.clone(),
-            literal: self.literal.clone(),
-            match_price_count: self.match_price_count,
-            pos_align: self.pos_align,
-            pos_decoders: self.pos_decoders,
-            pos_slot: self.pos_slot.clone(),
-            rep_len_encoder: self.rep_len_encoder.clone(),
-            reps: self.reps,
-            state: self.state,
-        }
-    }
-
-    pub(crate) fn restore_state(&mut self, state: LzmaEncoderState) {
-        self.align_price_count = state.align_price_count;
-        self.align_prices = state.align_prices;
-        self.dist_prices = state.dist_prices;
-        self.dist_slot_prices = state.dist_slot_prices;
-        self.is_match = state.is_match;
-        self.is_rep = state.is_rep;
-        self.is_rep_g0 = state.is_rep_g0;
-        self.is_rep_g1 = state.is_rep_g1;
-        self.is_rep_g2 = state.is_rep_g2;
-        self.is_rep0_long = state.is_rep0_long;
-        self.len_encoder = state.len_encoder;
-        self.literal = state.literal;
-        self.match_price_count = state.match_price_count;
-        self.pos_align = state.pos_align;
-        self.pos_decoders = state.pos_decoders;
-        self.pos_slot = state.pos_slot;
-        self.rep_len_encoder = state.rep_len_encoder;
-        self.reps = state.reps;
-        self.state = state.state;
-        self.pending_decisions.clear();
-        self.pending_index = 0;
-    }
-
     pub(crate) fn encode_range_limited(
         &mut self,
         input: &[u8],
@@ -1499,28 +1451,6 @@ impl LzmaEncoder {
     }
 }
 
-pub(crate) struct LzmaEncoderState {
-    align_price_count: u32,
-    align_prices: [u32; 1 << NUM_ALIGN_BITS],
-    dist_prices: Vec<u32>,
-    dist_slot_prices: Vec<u32>,
-    is_match: Vec<u16>,
-    is_rep: [u16; NUM_STATES],
-    is_rep_g0: [u16; NUM_STATES],
-    is_rep_g1: [u16; NUM_STATES],
-    is_rep_g2: [u16; NUM_STATES],
-    is_rep0_long: Vec<u16>,
-    len_encoder: LenDecoder,
-    literal: Vec<u16>,
-    match_price_count: u32,
-    pos_align: [u16; 1 << NUM_ALIGN_BITS],
-    pos_decoders: [u16; NUM_FULL_DISTANCES],
-    pos_slot: Vec<u16>,
-    rep_len_encoder: LenDecoder,
-    reps: [u32; 4],
-    state: u32,
-}
-
 pub struct LzmaDecoder {
     dict_size: u32,
     is_match: Vec<u16>,
@@ -1934,11 +1864,13 @@ struct RangeEncoder {
 
 impl RangeEncoder {
     fn new(output_limit: Option<usize>) -> RangeEncoder {
+        let capacity = output_limit.unwrap_or(0);
+
         RangeEncoder {
             cache: 0,
             cache_size: 1,
             low: 0,
-            output: Vec::new(),
+            output: Vec::with_capacity(capacity),
             output_limit,
             output_limit_reached: false,
             range: u32::MAX,

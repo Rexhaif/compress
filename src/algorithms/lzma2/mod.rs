@@ -102,16 +102,18 @@ fn compressibility_score(data: &[u8], start: usize) -> usize {
         return 0;
     }
 
-    let mut seen = [false; 65_536];
+    let mut seen = [0u64; 1 << 10];
     let mut repeats = 0usize;
     let mut position = start;
 
     while position + 4 <= end {
         let hash = sample_hash4(data, position);
-        if seen[hash] {
+        let seen_word = hash >> 6;
+        let seen_bit = 1u64 << (hash & 63);
+        if seen[seen_word] & seen_bit != 0 {
             repeats += 1;
         } else {
-            seen[hash] = true;
+            seen[seen_word] |= seen_bit;
         }
 
         position += 4;
@@ -135,7 +137,6 @@ fn build_packet(
         encoder.reset_state();
     }
 
-    let snapshot = encoder.snapshot_state();
     let dictionary_start = if state.dictionary_reset_done {
         0
     } else {
@@ -170,7 +171,7 @@ fn build_packet(
             &mut next_state,
         )?;
     } else {
-        encoder.restore_state(snapshot);
+        encoder.reset_state();
         append_uncompressed_packets(&mut bytes, data, start, end, &mut next_state);
     }
 
@@ -335,24 +336,24 @@ fn append_uncompressed_packets(
 
     while offset < end {
         let chunk_end = (offset + LZMA2_UNCOMPRESSED_CHUNK_MAX).min(end);
-        let packet = uncompressed_packet(&data[offset..chunk_end], !state.dictionary_reset_done);
+        append_uncompressed_packet(
+            encoded,
+            &data[offset..chunk_end],
+            !state.dictionary_reset_done,
+        );
 
-        encoded.extend_from_slice(&packet);
         state.dictionary_reset_done = true;
         state.state_reset_pending = true;
         offset = chunk_end;
     }
 }
 
-fn uncompressed_packet(data: &[u8], reset_dictionary: bool) -> Vec<u8> {
-    let mut packet = Vec::with_capacity(data.len() + 3);
+fn append_uncompressed_packet(encoded: &mut Vec<u8>, data: &[u8], reset_dictionary: bool) {
     let size_field = (data.len() as u16).wrapping_sub(1);
 
-    packet.push(if reset_dictionary { 0x01 } else { 0x02 });
-    packet.extend_from_slice(&size_field.to_be_bytes());
-    packet.extend_from_slice(data);
-
-    packet
+    encoded.push(if reset_dictionary { 0x01 } else { 0x02 });
+    encoded.extend_from_slice(&size_field.to_be_bytes());
+    encoded.extend_from_slice(data);
 }
 
 fn lzma_options(options: &Lzma2Options) -> EncoderOptions {
