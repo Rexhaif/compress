@@ -879,7 +879,9 @@ fn effective_block_size(options: &XzOptions) -> Result<usize> {
 }
 
 fn default_block_size(options: &XzOptions) -> u64 {
-    let serial_default = (u64::from(options.dict_size) * 3).max(1024 * 1024);
+    let serial_default = (u64::from(options.dict_size) * 8)
+        .max(1024 * 1024)
+        .min(64 * 1024 * 1024);
     if options.threads <= 1 {
         return serial_default;
     }
@@ -1091,7 +1093,7 @@ mod tests {
         options.block_size = None;
         options.dict_size = 8 * 1024 * 1024;
         options.threads = 1;
-        assert_eq!(default_block_size(&options), 24 * 1024 * 1024);
+        assert_eq!(default_block_size(&options), 64 * 1024 * 1024);
 
         options.threads = 4;
         assert_eq!(default_block_size(&options), 24 * 1024 * 1024);
