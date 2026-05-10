@@ -271,6 +271,22 @@ impl LzmaEncoder {
         self.encode_range_inner(input, start, end, dictionary_start, Some(output_limit))
     }
 
+    pub(crate) fn observe_uncompressed_range(
+        &mut self,
+        input: &[u8],
+        start: usize,
+        end: usize,
+        dictionary_start: usize,
+    ) {
+        self.dictionary_start = dictionary_start;
+        self.pending_decisions.clear();
+        self.pending_index = 0;
+
+        for position in start..end {
+            self.finder.insert(input, position);
+        }
+    }
+
     fn encode_range_inner(
         &mut self,
         input: &[u8],

@@ -31,7 +31,7 @@ pub fn encode(data: &[u8], options: &Lzma2Options) -> Result<Vec<u8>> {
         let packet = if plan.attempt_compression {
             build_packet(&mut encoder, data, offset, end, options, state)?
         } else {
-            build_uncompressed_packet(data, offset, end, state)
+            build_uncompressed_packet(&mut encoder, data, offset, end, state)
         };
 
         encoded.extend_from_slice(&packet.bytes);
@@ -177,6 +177,7 @@ fn build_packet(
 }
 
 fn build_uncompressed_packet(
+    encoder: &mut LzmaEncoder,
     data: &[u8],
     start: usize,
     end: usize,
@@ -184,8 +185,14 @@ fn build_uncompressed_packet(
 ) -> PacketCandidate {
     let mut bytes = Vec::new();
     let mut next_state = state;
+    let dictionary_start = if state.dictionary_reset_done {
+        0
+    } else {
+        start
+    };
 
     append_uncompressed_packets(&mut bytes, data, start, end, &mut next_state);
+    encoder.observe_uncompressed_range(data, start, end, dictionary_start);
 
     PacketCandidate {
         bytes,
@@ -204,7 +211,7 @@ fn sample_hash4(data: &[u8], position: usize) -> usize {
 }
 
 fn lzma_state_resets(state: &Lzma2EncodeState) -> bool {
-    !state.properties_written || !state.dictionary_reset_done
+    state.state_reset_pending || !state.properties_written || !state.dictionary_reset_done
 }
 
 fn candidate_end(data: &[u8], start: usize, unpack_size: usize) -> usize {
@@ -281,6 +288,8 @@ fn append_lzma_chunk(
         0xE0
     } else if has_properties {
         0xC0
+    } else if state.state_reset_pending {
+        0xA0
     } else {
         0x80
     };
@@ -295,6 +304,7 @@ fn append_lzma_chunk(
     }
     encoded.extend_from_slice(compressed);
     state.dictionary_reset_done = true;
+    state.state_reset_pending = false;
 
     Ok(())
 }
@@ -324,6 +334,7 @@ fn append_uncompressed_packets(
 
         encoded.extend_from_slice(&packet);
         state.dictionary_reset_done = true;
+        state.state_reset_pending = true;
         offset = chunk_end;
     }
 }
@@ -354,6 +365,7 @@ fn lzma_options(options: &Lzma2Options) -> EncoderOptions {
 struct Lzma2EncodeState {
     dictionary_reset_done: bool,
     properties_written: bool,
+    state_reset_pending: bool,
 }
 
 impl Lzma2EncodeState {
@@ -361,6 +373,7 @@ impl Lzma2EncodeState {
         Lzma2EncodeState {
             dictionary_reset_done: false,
             properties_written: false,
+            state_reset_pending: false,
         }
     }
 }
