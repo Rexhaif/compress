@@ -183,6 +183,57 @@ impl<'a> BitReader<'a> {
         Ok(value)
     }
 
+    pub fn peek_bits(&self, bits: u8) -> Result<u32> {
+        if bits == 0 {
+            return Ok(0);
+        }
+        if self.bit_pos + usize::from(bits) > self.data.len() * 8 {
+            return Err(Error::Format("truncated bzip2 bitstream"));
+        }
+
+        if bits <= 16 {
+            let byte_pos = self.bit_pos / 8;
+            if byte_pos + 2 < self.data.len() {
+                let bit_offset = (self.bit_pos % 8) as u8;
+                let word = (u32::from(self.data[byte_pos]) << 16)
+                    | (u32::from(self.data[byte_pos + 1]) << 8)
+                    | u32::from(self.data[byte_pos + 2]);
+                let shift = 24 - u32::from(bit_offset) - u32::from(bits);
+                return Ok((word >> shift) & ((1u32 << bits) - 1));
+            }
+        }
+
+        let mut value = 0u32;
+        let mut remaining = bits;
+        let mut bit_pos = self.bit_pos;
+
+        while remaining > 0 {
+            let byte = self.data[bit_pos / 8];
+            let bit_offset = (bit_pos % 8) as u8;
+            let available = 8 - bit_offset;
+            let take = remaining.min(available);
+            let shift = available - take;
+            let mask = (1u16 << take) - 1;
+            value = (value << take) | u32::from((byte >> shift) & mask as u8);
+            bit_pos += usize::from(take);
+            remaining -= take;
+        }
+
+        Ok(value)
+    }
+
+    pub fn skip_bits(&mut self, bits: u8) -> Result<()> {
+        if self.bit_pos + usize::from(bits) > self.data.len() * 8 {
+            return Err(Error::Format("truncated bzip2 bitstream"));
+        }
+        self.bit_pos += usize::from(bits);
+        Ok(())
+    }
+
+    pub fn remaining_bits(&self) -> usize {
+        self.data.len() * 8 - self.bit_pos
+    }
+
     pub fn read_bits_u64(&mut self, bits: u8) -> Result<u64> {
         if bits == 0 {
             return Ok(0);
@@ -218,5 +269,30 @@ impl<'a> BitReader<'a> {
 
     pub fn consumed_bytes(&self) -> usize {
         self.bit_pos.div_ceil(8)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BitReader;
+
+    #[test]
+    fn peek_bits_does_not_advance_reader() {
+        let mut reader = BitReader::new(&[0b1010_1100, 0b0111_0001, 0b1100_0000]);
+
+        assert_eq!(reader.peek_bits(10).unwrap(), 0b1010_1100_01);
+        assert_eq!(reader.remaining_bits(), 24);
+        assert_eq!(reader.read_bits(4).unwrap(), 0b1010);
+        assert_eq!(reader.peek_bits(9).unwrap(), 0b1100_0111_0);
+        assert_eq!(reader.read_bits(9).unwrap(), 0b1100_0111_0);
+    }
+
+    #[test]
+    fn skip_bits_advances_reader() {
+        let mut reader = BitReader::new(&[0b1111_0000, 0b1010_0101]);
+
+        reader.skip_bits(5).unwrap();
+        assert_eq!(reader.read_bits(6).unwrap(), 0b000_101);
+        assert_eq!(reader.remaining_bits(), 5);
     }
 }

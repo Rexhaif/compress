@@ -3,6 +3,8 @@ use crate::error::{Error, Result};
 
 const GROUP_SIZE: usize = 50;
 pub const DEFAULT_REFINEMENT_PASSES: usize = 0;
+const FAST_DECODE_BITS: usize = 10;
+const FAST_DECODE_EMPTY: u32 = u32::MAX;
 const MAX_GROUPS: usize = 6;
 const MAX_CODE_LEN: usize = 20;
 
@@ -13,6 +15,7 @@ struct HuffmanCodes {
 }
 
 struct DecodeTable {
+    fast: Vec<u32>,
     min_len: usize,
     max_len: usize,
     limit: [i32; MAX_CODE_LEN + 2],
@@ -566,7 +569,10 @@ fn build_decode_table(lengths: &[u8]) -> Result<DecodeTable> {
         base[length] = ((limit[length - 1] + 1) << 1) - base[length];
     }
 
+    let fast = build_fast_decode_table(lengths);
+
     Ok(DecodeTable {
+        fast,
         min_len,
         max_len,
         limit,
@@ -575,7 +581,39 @@ fn build_decode_table(lengths: &[u8]) -> Result<DecodeTable> {
     })
 }
 
+fn build_fast_decode_table(lengths: &[u8]) -> Vec<u32> {
+    let codes = assign_codes(lengths);
+    let mut fast = vec![FAST_DECODE_EMPTY; 1 << FAST_DECODE_BITS];
+
+    for (symbol, &length) in lengths.iter().enumerate() {
+        let length = usize::from(length);
+        if length == 0 || length > FAST_DECODE_BITS {
+            continue;
+        }
+
+        let code = codes[symbol] as usize;
+        let shift = FAST_DECODE_BITS - length;
+        let start = code << shift;
+        let end = start + (1usize << shift);
+        let entry = ((length as u32) << 16) | symbol as u32;
+        for slot in start..end {
+            fast[slot] = entry;
+        }
+    }
+
+    fast
+}
+
 fn decode_one(reader: &mut BitReader<'_>, table: &DecodeTable) -> Result<u16> {
+    if reader.remaining_bits() >= FAST_DECODE_BITS {
+        let bits = reader.peek_bits(FAST_DECODE_BITS as u8)? as usize;
+        let entry = table.fast[bits];
+        if entry != FAST_DECODE_EMPTY {
+            reader.skip_bits((entry >> 16) as u8)?;
+            return Ok(entry as u16);
+        }
+    }
+
     let mut length = table.min_len;
     let mut code = reader.read_bits(length as u8)? as i32;
 
