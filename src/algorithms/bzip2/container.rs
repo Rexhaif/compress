@@ -4,7 +4,9 @@ use crate::error::{Error, Result};
 
 use rayon::prelude::*;
 
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
+use std::sync::mpsc;
 
 #[derive(Clone, Debug)]
 pub struct Bzip2Options {
@@ -345,22 +347,57 @@ fn decode_stream_frames_to_writer_with_pool<W: Write>(
     pool: &rayon::ThreadPool,
     writer: &mut W,
 ) -> Result<()> {
-    let decoded_streams = pool.install(|| {
-        frames
-            .par_iter()
-            .map(|frame| {
-                let slice = &input[frame.start..frame.end];
-                let decoded = decode_one_stream_serial(slice)?;
-                if decoded.consumed != slice.len() {
-                    return Err(Error::Format("trailing data after bzip2 stream"));
-                }
-                Ok(decoded)
-            })
-            .collect::<Result<Vec<_>>>()
-    })?;
+    let (sender, receiver) = mpsc::channel();
 
-    for decoded in decoded_streams {
-        writer.write_all(&decoded.bytes)?;
+    std::thread::scope(|thread_scope| {
+        let scheduler = thread_scope.spawn(move || {
+            pool.scope(|scope| {
+                for (index, frame) in frames.iter().copied().enumerate() {
+                    let sender = sender.clone();
+                    scope.spawn(move |_| {
+                        let slice = &input[frame.start..frame.end];
+                        let result = decode_one_stream_serial(slice).and_then(|decoded| {
+                            if decoded.consumed != slice.len() {
+                                return Err(Error::Format("trailing data after bzip2 stream"));
+                            }
+                            Ok(decoded.bytes)
+                        });
+                        let _ = sender.send((index, result));
+                    });
+                }
+                drop(sender);
+            });
+        });
+
+        let result = write_decoded_frames(receiver, writer);
+        if scheduler.join().is_err() && result.is_ok() {
+            return Err(Error::Message("bzip2 decode worker panicked".to_string()));
+        }
+
+        result
+    })
+}
+
+fn write_decoded_frames<W: Write>(
+    receiver: mpsc::Receiver<(usize, Result<Vec<u8>>)>,
+    writer: &mut W,
+) -> Result<()> {
+    let mut pending = BTreeMap::new();
+    let mut next = 0usize;
+
+    for (index, decoded) in receiver {
+        match decoded {
+            Ok(bytes) => {
+                pending.insert(index, bytes);
+                while let Some(bytes) = pending.remove(&next) {
+                    writer.write_all(&bytes)?;
+                    next += 1;
+                }
+            }
+            Err(error) => {
+                return Err(error);
+            }
+        }
     }
 
     Ok(())
