@@ -123,13 +123,24 @@ fn execute_file_decompress(
     codec_options: &CodecOptions,
 ) -> Result<()> {
     let input = fs::read(path)?;
-    let output = decode_stream(codec_options, &input)?;
 
     if options.stdout {
+        if let CodecOptions::Bzip2(options) = codec_options {
+            let stdout = std::io::stdout();
+            bzip2::decode_stream_with_threads_to_writer(
+                input.as_slice(),
+                options.threads,
+                stdout.lock(),
+            )?;
+            return Ok(());
+        }
+
+        let output = decode_stream(codec_options, &input)?;
         std::io::stdout().write_all(&output)?;
         return Ok(());
     }
 
+    let output = decode_stream(codec_options, &input)?;
     let target = decompressed_path(path, options.algorithm)?;
     write_output_file(path, &target, &output, options)?;
 

@@ -275,6 +275,24 @@ pub fn decode_stream_with_threads(input: &[u8], threads: u32) -> Result<Vec<u8>>
     decode_stream_parallel(input, threads).or_else(|_| decode_stream_serial(input))
 }
 
+pub fn decode_stream_with_threads_to_writer<W: Write>(
+    input: &[u8],
+    threads: u32,
+    mut writer: W,
+) -> Result<()> {
+    if threads <= 1 {
+        let output = decode_stream_serial(input)?;
+        writer.write_all(&output)?;
+        return Ok(());
+    }
+
+    decode_stream_to_writer_parallel(input, threads, &mut writer).or_else(|_| {
+        let output = decode_stream_serial(input)?;
+        writer.write_all(&output)?;
+        Ok(())
+    })
+}
+
 fn decode_stream_parallel(input: &[u8], threads: u32) -> Result<Vec<u8>> {
     if let Ok(frames) = split_stream_frames_by_header(input)
         && frames.len() > 1
@@ -291,6 +309,30 @@ fn decode_stream_parallel(input: &[u8], threads: u32) -> Result<Vec<u8>> {
     }
 
     decode_stream_frames_with_pool(input, &frames, &pool)
+}
+
+fn decode_stream_to_writer_parallel<W: Write>(
+    input: &[u8],
+    threads: u32,
+    writer: &mut W,
+) -> Result<()> {
+    if let Ok(frames) = split_stream_frames_by_header(input)
+        && frames.len() > 1
+    {
+        let pool = parallel_pool(threads)?;
+        return decode_stream_frames_to_writer_with_pool(input, &frames, &pool, writer);
+    }
+
+    let frames = split_stream_frames(input)?;
+    let pool = parallel_pool(threads)?;
+
+    if frames.len() <= 1 {
+        let decoded = decode_one_stream_parallel(input, &pool)?;
+        writer.write_all(&decoded.bytes)?;
+        return Ok(());
+    }
+
+    decode_stream_frames_to_writer_with_pool(input, &frames, &pool, writer)
 }
 
 fn decode_stream_frames_parallel(
@@ -331,6 +373,33 @@ fn decode_stream_frames_with_pool(
     }
 
     Ok(output)
+}
+
+fn decode_stream_frames_to_writer_with_pool<W: Write>(
+    input: &[u8],
+    frames: &[StreamFrame],
+    pool: &rayon::ThreadPool,
+    writer: &mut W,
+) -> Result<()> {
+    let decoded_streams = pool.install(|| {
+        frames
+            .par_iter()
+            .map(|frame| {
+                let slice = &input[frame.start..frame.end];
+                let decoded = decode_one_stream_serial(slice)?;
+                if decoded.consumed != slice.len() {
+                    return Err(Error::Format("trailing data after bzip2 stream"));
+                }
+                Ok(decoded)
+            })
+            .collect::<Result<Vec<_>>>()
+    })?;
+
+    for decoded in decoded_streams {
+        writer.write_all(&decoded.bytes)?;
+    }
+
+    Ok(())
 }
 
 fn decode_stream_serial(input: &[u8]) -> Result<Vec<u8>> {
