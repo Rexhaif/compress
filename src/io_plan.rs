@@ -283,18 +283,19 @@ fn build_xz_options(options: &Options) -> Result<XzOptions> {
         Algorithm::Lzma2 | Algorithm::Xz => {}
     }
 
+    let threads = normalize_threads(options.threads);
     let mut xz_options = XzOptions {
         block_size: options.block_size,
         check: options.check,
         depth: preset_depth(options.level, options.extreme),
-        dict_size: preset_dict_size(options.level),
+        dict_size: preset_dict_size(options.level, threads),
         lc: 3,
         lp: 0,
         match_finder: MatchFinderKind::Bt4,
         mode: CompressionMode::Normal,
         nice: preset_nice(options.level, options.extreme),
         pb: 2,
-        threads: normalize_threads(options.threads),
+        threads,
     };
 
     if options.extreme {
@@ -429,7 +430,7 @@ fn parse_mode(value: &str) -> Result<CompressionMode> {
     }
 }
 
-fn preset_dict_size(level: u8) -> u32 {
+fn preset_dict_size(level: u8, threads: u32) -> u32 {
     match level {
         0 => 256 * 1024,
         1 => 1024 * 1024,
@@ -437,6 +438,9 @@ fn preset_dict_size(level: u8) -> u32 {
         3 => 4 * 1024 * 1024,
         4 => 4 * 1024 * 1024,
         5 => 8 * 1024 * 1024,
+        // Single-thread level 6 has enough speed margin to spend on a larger
+        // dictionary; threaded level 6 keeps 8 MiB to preserve T8 throughput.
+        6 if threads <= 1 => 16 * 1024 * 1024,
         6 => 8 * 1024 * 1024,
         7 => 16 * 1024 * 1024,
         8 => 32 * 1024 * 1024,
