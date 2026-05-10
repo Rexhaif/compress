@@ -147,6 +147,22 @@ fn encode_with_scan(input: &[u8], used: [bool; 256], used_symbols: Vec<u8>) -> E
 
 #[inline(always)]
 fn find_mtf_index(mtf: &[u8; 256], byte: u8) -> usize {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // x86_64 guarantees SSE2. Compare 16 MTF entries at a time and use the
+        // equality mask to locate the first match.
+        return unsafe { find_mtf_index_sse2(mtf, byte) };
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        find_mtf_index_word(mtf, byte)
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline(always)]
+fn find_mtf_index_word(mtf: &[u8; 256], byte: u8) -> usize {
     const ONES: u64 = 0x0101_0101_0101_0101;
     const HIGHS: u64 = 0x8080_8080_8080_8080;
 
@@ -162,6 +178,27 @@ fn find_mtf_index(mtf: &[u8; 256], byte: u8) -> usize {
             return offset + (matches.trailing_zeros() as usize / 8);
         }
         offset += 8;
+    }
+
+    unreachable!("MTF table contains every symbol in the block alphabet")
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn find_mtf_index_sse2(mtf: &[u8; 256], byte: u8) -> usize {
+    use core::arch::x86_64::{
+        __m128i, _mm_cmpeq_epi8, _mm_loadu_si128, _mm_movemask_epi8, _mm_set1_epi8,
+    };
+
+    let needle = _mm_set1_epi8(byte as i8);
+    let mut offset = 0usize;
+    while offset < mtf.len() {
+        let chunk = unsafe { _mm_loadu_si128(mtf.as_ptr().add(offset).cast::<__m128i>()) };
+        let matches = _mm_movemask_epi8(_mm_cmpeq_epi8(chunk, needle)) as u32;
+        if matches != 0 {
+            return offset + matches.trailing_zeros() as usize;
+        }
+        offset += 16;
     }
 
     unreachable!("MTF table contains every symbol in the block alphabet")

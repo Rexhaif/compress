@@ -350,6 +350,23 @@ fn compare_rotation_chunked(
             right_sum
         };
 
+        #[cfg(target_arch = "x86_64")]
+        if offset + 16 <= n && left_index + 16 <= n && right_index + 16 <= n {
+            let mismatch = unsafe {
+                first_mismatch_sse2(
+                    input.as_ptr().add(left_index),
+                    input.as_ptr().add(right_index),
+                )
+            };
+            if mismatch == 16 {
+                offset += 16;
+                continue;
+            }
+
+            let mismatch = mismatch as usize;
+            return input[left_index + mismatch].cmp(&input[right_index + mismatch]);
+        }
+
         if offset + 8 <= n && left_index + 8 <= n && right_index + 8 <= n {
             // Big-endian words preserve bytewise lexicographic order.
             let left_word =
@@ -382,6 +399,22 @@ fn compare_rotation_chunked(
     }
 
     left.cmp(&right)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+unsafe fn first_mismatch_sse2(left: *const u8, right: *const u8) -> u32 {
+    use core::arch::x86_64::{__m128i, _mm_cmpeq_epi8, _mm_loadu_si128, _mm_movemask_epi8};
+
+    let left = unsafe { _mm_loadu_si128(left.cast::<__m128i>()) };
+    let right = unsafe { _mm_loadu_si128(right.cast::<__m128i>()) };
+    let equal = _mm_movemask_epi8(_mm_cmpeq_epi8(left, right)) as u32;
+    let different = !equal & 0xFFFF;
+    if different == 0 {
+        16
+    } else {
+        different.trailing_zeros()
+    }
 }
 
 fn cyclic_suffix_order(input: &[u8]) -> Vec<u32> {
