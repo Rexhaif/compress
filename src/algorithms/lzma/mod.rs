@@ -24,6 +24,8 @@ const MATCH_LEN_MIN: usize = 2;
 const LEN_SYMBOLS: usize = MATCH_LEN_MAX - MATCH_LEN_MIN + 1;
 const MATCH_PRICE_REFRESH: u32 = 1 << 7;
 const EMPTY_MATCH: u32 = u32::MAX;
+const HASH2_SIZE: usize = 1 << 10;
+const HASH2_MASK: u32 = (HASH2_SIZE as u32) - 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CompressionMode {
@@ -2534,7 +2536,7 @@ impl MatchFinderBt4 {
             cyclic_size,
             depth,
             hash4_mask: hash4_size - 1,
-            hash2: vec![EMPTY_MATCH; 1 << 16],
+            hash2: vec![EMPTY_MATCH; HASH2_SIZE],
             hash3: vec![EMPTY_MATCH; 1 << 16],
             hash4: vec![EMPTY_MATCH; hash4_size],
             son: vec![EMPTY_MATCH; cyclic_size * 2],
@@ -2669,10 +2671,10 @@ impl MatchFinderBt4 {
             let byte1 = ((word >> 8) & 0xFF) as u8;
             let byte2 = ((word >> 16) & 0xFF) as u8;
             let byte3 = (word >> 24) as u8;
-            let hash2 = usize::from(byte0) | (usize::from(byte1) << 8);
+            let temp = lz_hash_table(byte0) ^ u32::from(byte1);
+            let hash2 = (temp & HASH2_MASK) as usize;
             self.hash2[hash2] = position as u32;
 
-            let temp = lz_hash_table(byte0) ^ u32::from(byte1);
             let hash23 = temp ^ (u32::from(byte2) << 8);
             let hash3 = (hash23 & 0xFFFF) as usize;
             self.hash3[hash3] = position as u32;
@@ -2687,10 +2689,10 @@ impl MatchFinderBt4 {
         if position + 2 <= input.len() {
             let byte0 = input[position];
             let byte1 = input[position + 1];
-            let hash2 = usize::from(byte0) | (usize::from(byte1) << 8);
+            let temp = lz_hash_table(byte0) ^ u32::from(byte1);
+            let hash2 = (temp & HASH2_MASK) as usize;
             self.hash2[hash2] = position as u32;
 
-            let temp = lz_hash_table(byte0) ^ u32::from(byte1);
             if position + 3 <= input.len() {
                 let byte2 = input[position + 2];
                 let hash3 = ((temp ^ (u32::from(byte2) << 8)) & 0xFFFF) as usize;
@@ -3259,7 +3261,7 @@ fn candidate_in_window(position: usize, candidate: usize, dict_size: usize) -> b
 }
 
 fn hash2(input: &[u8], position: usize) -> usize {
-    usize::from(input[position]) | (usize::from(input[position + 1]) << 8)
+    ((lz_hash_table(input[position]) ^ u32::from(input[position + 1])) & HASH2_MASK) as usize
 }
 
 fn hash3(input: &[u8], position: usize) -> usize {
