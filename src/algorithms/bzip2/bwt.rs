@@ -750,12 +750,11 @@ pub fn inverse(last_column: &[u8], primary_index: usize) -> Result<Vec<u8>> {
         total += count;
     }
 
-    let mut seen = [0usize; 256];
     let mut next = vec![0u32; n];
     for (index, &byte) in last_column.iter().enumerate() {
         let byte_index = usize::from(byte);
-        let slot = starts[byte_index] + seen[byte_index];
-        seen[byte_index] += 1;
+        let slot = starts[byte_index];
+        starts[byte_index] += 1;
         // `slot` is formed from the cumulative byte histogram and occurrence
         // count, so every slot in `0..n` is written exactly once.
         unsafe {
