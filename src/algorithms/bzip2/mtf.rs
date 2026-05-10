@@ -184,7 +184,9 @@ fn move_to_front_scan(mtf: &mut [u8; 256], byte: u8, index: usize) {
             mtf[2] = mtf[1];
             mtf[1] = mtf[0];
         }
-        _ => mtf.copy_within(0..index, 1),
+        _ => unsafe {
+            std::ptr::copy(mtf.as_ptr(), mtf.as_mut_ptr().add(1), index);
+        },
     }
     mtf[0] = byte;
 }
@@ -325,7 +327,9 @@ pub fn decode(symbols: &[u16], used_symbols: &[u8], output_limit: usize) -> Resu
         }
 
         let byte = mtf[mtf_index];
-        mtf.copy_within(0..mtf_index, 1);
+        unsafe {
+            std::ptr::copy(mtf.as_ptr(), mtf.as_mut_ptr().add(1), mtf_index);
+        }
         mtf[0] = byte;
         output.push(byte);
         if output.len() > output_limit {
