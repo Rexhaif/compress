@@ -466,6 +466,10 @@ fn refine_cyclic_order(
     mut length: usize,
 ) -> Vec<u32> {
     let n = input.len();
+    if length >= n || classes >= n {
+        return order;
+    }
+
     let mut next_classes = uninit_u32_vec(n);
 
     while length < n && classes < n {
