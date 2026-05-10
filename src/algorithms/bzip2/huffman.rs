@@ -2,7 +2,7 @@ use crate::algorithms::bzip2::bitstream::{BitReader, BitWriter};
 use crate::error::{Error, Result};
 
 const GROUP_SIZE: usize = 50;
-pub const DEFAULT_REFINEMENT_PASSES: usize = 3;
+pub const DEFAULT_REFINEMENT_PASSES: usize = 0;
 const MAX_GROUPS: usize = 6;
 const MAX_CODE_LEN: usize = 20;
 

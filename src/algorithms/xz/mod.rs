@@ -6,8 +6,6 @@ use crate::error::{Error, Result};
 use rayon::prelude::*;
 
 use std::io::{Read, Write};
-use std::process::{Command, Stdio};
-use std::sync::OnceLock;
 
 const FOOTER_MAGIC: [u8; 2] = [0x59, 0x5A];
 const HEADER_MAGIC: [u8; 6] = [0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00];
@@ -82,10 +80,6 @@ pub fn encode_reader_to_writer<R: Read, W: Write>(
 ) -> Result<()> {
     validate_options(options)?;
 
-    if try_encode_with_system_xz(&mut reader, &mut writer, options)? {
-        return Ok(());
-    }
-
     let block_size = effective_block_size(options)?;
     let stream_flags = [0x00, options.check.xz_id()];
     let mut header = Vec::new();
@@ -108,99 +102,12 @@ pub fn encode_reader_to_writer<R: Read, W: Write>(
     Ok(())
 }
 
-fn try_encode_with_system_xz<R: Read, W: Write>(
-    reader: &mut R,
-    writer: &mut W,
-    options: &XzOptions,
-) -> Result<bool> {
-    if !system_xz_fast_path_enabled(options) || !system_xz_available() {
-        return Ok(false);
-    }
-
-    let mut input = Vec::new();
-    reader.read_to_end(&mut input)?;
-
-    let threads_arg = format!("-T{}", options.threads.max(1));
-    let block_size_arg = system_xz_block_size_arg(options.threads);
-    let mut child = Command::new("xz")
-        .args(["-6", threads_arg.as_str(), block_size_arg, "-c"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()?;
-
-    let mut child_stdin = child
-        .stdin
-        .take()
-        .ok_or(Error::Message("failed to open xz stdin".to_string()))?;
-    let mut child_stdout = child
-        .stdout
-        .take()
-        .ok_or(Error::Message("failed to open xz stdout".to_string()))?;
-
-    let input_thread = std::thread::spawn(move || -> std::io::Result<()> {
-        child_stdin.write_all(&input)?;
-        Ok(())
-    });
-
-    std::io::copy(&mut child_stdout, writer)?;
-    let input_result = input_thread
-        .join()
-        .map_err(|_| Error::Message("xz input thread panicked".to_string()))?;
-    input_result?;
-
-    let status = child.wait()?;
-    if !status.success() {
-        return Err(Error::Message(format!("xz failed with status {status}")));
-    }
-
-    Ok(true)
-}
-
-pub(crate) fn system_xz_block_size_arg(threads: u32) -> &'static str {
-    if threads <= 1 {
-        "--block-size=96MiB"
-    } else {
-        "--block-size=24MiB"
-    }
-}
-
-pub(crate) fn system_xz_fast_path_enabled(options: &XzOptions) -> bool {
-    options.block_size.is_none()
-        && options.check == CheckType::Crc64
-        && options.depth == 128
-        && options.dict_size == 8 * 1024 * 1024
-        && options.lc == 3
-        && options.lp == 0
-        && options.match_finder == MatchFinderKind::Bt4
-        && options.mode == CompressionMode::Normal
-        && options.nice == 273
-        && options.pb == 2
-}
-
-pub(crate) fn system_xz_available() -> bool {
-    static SYSTEM_XZ_AVAILABLE: OnceLock<bool> = OnceLock::new();
-    *SYSTEM_XZ_AVAILABLE.get_or_init(|| {
-        Command::new("xz")
-            .arg("--version")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
-    })
-}
-
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn decode_stream(input: &[u8]) -> Result<Vec<u8>> {
     decode_stream_with_threads(input, available_threads())
 }
 
 pub fn decode_stream_with_threads(input: &[u8], threads: u32) -> Result<Vec<u8>> {
-    if let Some(output) = try_decode_with_system_xz(input, threads)? {
-        return Ok(output);
-    }
-
     let stream = parse_single_stream(input)?;
     let mut parsed_blocks = Vec::with_capacity(stream.records.len());
     let mut block_offset = 12usize;
@@ -239,54 +146,6 @@ pub fn decode_stream_with_threads(input: &[u8], threads: u32) -> Result<Vec<u8>>
     }
 
     Ok(output)
-}
-
-#[cfg(not(test))]
-fn try_decode_with_system_xz(input: &[u8], threads: u32) -> Result<Option<Vec<u8>>> {
-    if threads > 1 || !system_xz_available() {
-        return Ok(None);
-    }
-
-    let mut child = Command::new("xz")
-        .args(["-T1", "-dc"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-
-    let mut child_stdin = child
-        .stdin
-        .take()
-        .ok_or(Error::Message("failed to open xz stdin".to_string()))?;
-    let mut child_stdout = child
-        .stdout
-        .take()
-        .ok_or(Error::Message("failed to open xz stdout".to_string()))?;
-    let input = input.to_vec();
-
-    let input_thread = std::thread::spawn(move || -> std::io::Result<()> {
-        child_stdin.write_all(&input)?;
-        Ok(())
-    });
-
-    let mut output = Vec::new();
-    child_stdout.read_to_end(&mut output)?;
-    let input_result = input_thread
-        .join()
-        .map_err(|_| Error::Message("xz input thread panicked".to_string()))?;
-    input_result?;
-
-    let status = child.wait()?;
-    if status.success() {
-        Ok(Some(output))
-    } else {
-        Ok(None)
-    }
-}
-
-#[cfg(test)]
-fn try_decode_with_system_xz(_input: &[u8], _threads: u32) -> Result<Option<Vec<u8>>> {
-    Ok(None)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -1216,7 +1075,7 @@ mod tests {
     }
 
     #[test]
-    fn system_xz_fast_path_round_trips_when_available() {
+    fn streaming_encoder_output_round_trips_with_stock_xz_when_available() {
         if !command_exists("xz") {
             return;
         }
