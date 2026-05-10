@@ -5,6 +5,7 @@ use crate::error::{Error, Result};
 
 const LZMA2_COMPRESSED_UNPACK_MAX: usize = 2 * 1024 * 1024;
 const LZMA2_DENSE_CHUNK_MAX: usize = 192 * 1024;
+const LZMA2_HIGH_SCORE_CHUNK_MAX: usize = 96 * 1024;
 const LZMA2_PACKED_CHUNK_MAX: usize = 1 << 16;
 const LZMA2_UNCOMPRESSED_CHUNK_MAX: usize = 64 * 1024;
 
@@ -57,6 +58,8 @@ fn plan_chunk(data: &[u8], start: usize, options: &Lzma2Options) -> ChunkPlan {
     let low_variety = has_low_byte_variety(data, start);
     let unpack_size = if score >= 70 && low_variety {
         LZMA2_DENSE_CHUNK_MAX
+    } else if options.normal_chunk_max >= LZMA2_UNCOMPRESSED_CHUNK_MAX && score >= 50 {
+        LZMA2_HIGH_SCORE_CHUNK_MAX
     } else if score >= 12 {
         options.normal_chunk_max
     } else {
