@@ -243,7 +243,7 @@ fn try_decode_with_system_xz(input: &[u8], threads: u32) -> Result<Option<Vec<u8
     }
 
     let mut child = Command::new("xz")
-        .args([&format!("-T{}", threads.max(1)), "-dc"])
+        .args(["-T1", "-dc"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
