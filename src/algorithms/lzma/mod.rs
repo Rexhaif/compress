@@ -3071,7 +3071,7 @@ fn lazy_next_normal_beats_current(current: ParseDecision, next: MatchCandidate) 
 }
 
 fn change_pair(small_distance: u32, big_distance: u32) -> bool {
-    (big_distance >> 6) > small_distance
+    (big_distance >> 5) > small_distance
 }
 
 fn zero_based_distance(distance: u32) -> u32 {
