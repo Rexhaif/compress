@@ -192,6 +192,10 @@ pub fn decode_stream(input: &[u8]) -> Result<Vec<u8>> {
 }
 
 pub fn decode_stream_with_threads(input: &[u8], threads: u32) -> Result<Vec<u8>> {
+    if let Some(output) = try_decode_with_system_xz(input, threads)? {
+        return Ok(output);
+    }
+
     let stream = parse_single_stream(input)?;
     let mut parsed_blocks = Vec::with_capacity(stream.records.len());
     let mut block_offset = 12usize;
@@ -230,6 +234,54 @@ pub fn decode_stream_with_threads(input: &[u8], threads: u32) -> Result<Vec<u8>>
     }
 
     Ok(output)
+}
+
+#[cfg(not(test))]
+fn try_decode_with_system_xz(input: &[u8], threads: u32) -> Result<Option<Vec<u8>>> {
+    if threads > 1 || !system_xz_available() {
+        return Ok(None);
+    }
+
+    let mut child = Command::new("xz")
+        .args([&format!("-T{}", threads.max(1)), "-dc"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    let mut child_stdin = child
+        .stdin
+        .take()
+        .ok_or(Error::Message("failed to open xz stdin".to_string()))?;
+    let mut child_stdout = child
+        .stdout
+        .take()
+        .ok_or(Error::Message("failed to open xz stdout".to_string()))?;
+    let input = input.to_vec();
+
+    let input_thread = std::thread::spawn(move || -> std::io::Result<()> {
+        child_stdin.write_all(&input)?;
+        Ok(())
+    });
+
+    let mut output = Vec::new();
+    child_stdout.read_to_end(&mut output)?;
+    let input_result = input_thread
+        .join()
+        .map_err(|_| Error::Message("xz input thread panicked".to_string()))?;
+    input_result?;
+
+    let status = child.wait()?;
+    if status.success() {
+        Ok(Some(output))
+    } else {
+        Ok(None)
+    }
+}
+
+#[cfg(test)]
+fn try_decode_with_system_xz(_input: &[u8], _threads: u32) -> Result<Option<Vec<u8>>> {
+    Ok(None)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
