@@ -289,7 +289,7 @@ fn build_xz_options(options: &Options) -> Result<XzOptions> {
         check: options.check,
         depth: preset_depth(options.level, options.extreme),
         dict_size: preset_dict_size(options.level, threads),
-        lc: 3,
+        lc: preset_lc(options.level),
         lp: 0,
         match_finder: MatchFinderKind::Bt4,
         mode: CompressionMode::Normal,
@@ -465,6 +465,10 @@ fn preset_nice(level: u8, extreme: bool) -> u32 {
     } else {
         base
     }
+}
+
+fn preset_lc(level: u8) -> u32 {
+    if level == 6 { 4 } else { 3 }
 }
 
 fn preset_depth(level: u8, extreme: bool) -> u32 {
