@@ -3026,9 +3026,9 @@ fn rep_margin(distance: u32) -> u32 {
     let distance = zero_based_distance(distance);
 
     if distance > (1 << 15) {
-        3
+        4
     } else if distance > (1 << 9) {
-        2
+        3
     } else {
         1
     }
