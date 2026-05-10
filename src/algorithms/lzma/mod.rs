@@ -2063,18 +2063,19 @@ impl<'a> RangeDecoder<'a> {
     fn decode_bit(&mut self, probs: &mut [u16], index: usize) -> Result<u32> {
         debug_assert!(index < probs.len());
 
-        let prob = u32::from(probs[index]);
+        let prob_slot = unsafe { probs.get_unchecked_mut(index) };
+        let prob = u32::from(*prob_slot);
         let bound = (self.range >> 11) * prob;
         let bit;
 
         if self.code < bound {
             self.range = bound;
-            probs[index] = (prob + ((BIT_MODEL_TOTAL - prob) >> MOVE_BITS)) as u16;
+            *prob_slot = (prob + ((BIT_MODEL_TOTAL - prob) >> MOVE_BITS)) as u16;
             bit = 0;
         } else {
             self.range -= bound;
             self.code -= bound;
-            probs[index] = (prob - (prob >> MOVE_BITS)) as u16;
+            *prob_slot = (prob - (prob >> MOVE_BITS)) as u16;
             bit = 1;
         }
 
