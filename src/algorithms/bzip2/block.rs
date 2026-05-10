@@ -168,7 +168,7 @@ fn rle_encode(input: &[u8]) -> RleEncoded {
 }
 
 fn rle_decode(input: &[u8]) -> Result<Vec<u8>> {
-    let mut output = Vec::new();
+    let mut output = Vec::with_capacity(input.len());
     let mut index = 0usize;
 
     while index < input.len() {

@@ -227,12 +227,54 @@ impl<'a> BitReader<'a> {
         Ok(value)
     }
 
+    #[inline]
+    pub fn peek_bits_unchecked(&self, bits: u8) -> u32 {
+        debug_assert!(bits > 0);
+        debug_assert!(bits <= 16);
+        debug_assert!(self.bit_pos + usize::from(bits) <= self.data.len() * 8);
+
+        let byte_pos = self.bit_pos / 8;
+        if byte_pos + 2 < self.data.len() {
+            let bit_offset = (self.bit_pos % 8) as u8;
+            let word = (u32::from(self.data[byte_pos]) << 16)
+                | (u32::from(self.data[byte_pos + 1]) << 8)
+                | u32::from(self.data[byte_pos + 2]);
+            let shift = 24 - u32::from(bit_offset) - u32::from(bits);
+            return (word >> shift) & ((1u32 << bits) - 1);
+        }
+
+        let mut value = 0u32;
+        let mut remaining = bits;
+        let mut bit_pos = self.bit_pos;
+
+        while remaining > 0 {
+            let byte = self.data[bit_pos / 8];
+            let bit_offset = (bit_pos % 8) as u8;
+            let available = 8 - bit_offset;
+            let take = remaining.min(available);
+            let shift = available - take;
+            let mask = (1u16 << take) - 1;
+            value = (value << take) | u32::from((byte >> shift) & mask as u8);
+            bit_pos += usize::from(take);
+            remaining -= take;
+        }
+
+        value
+    }
+
+    #[cfg(test)]
     pub fn skip_bits(&mut self, bits: u8) -> Result<()> {
         if self.bit_pos + usize::from(bits) > self.data.len() * 8 {
             return Err(Error::Format("truncated bzip2 bitstream"));
         }
         self.bit_pos += usize::from(bits);
         Ok(())
+    }
+
+    #[inline]
+    pub fn skip_bits_unchecked(&mut self, bits: u8) {
+        debug_assert!(self.bit_pos + usize::from(bits) <= self.data.len() * 8);
+        self.bit_pos += usize::from(bits);
     }
 
     pub fn remaining_bits(&self) -> usize {

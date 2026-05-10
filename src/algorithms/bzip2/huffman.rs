@@ -623,10 +623,10 @@ fn build_fast_decode_table(lengths: &[u8]) -> Vec<u32> {
 
 fn decode_one(reader: &mut BitReader<'_>, table: &DecodeTable) -> Result<u16> {
     if reader.remaining_bits() >= FAST_DECODE_BITS {
-        let bits = reader.peek_bits(FAST_DECODE_BITS as u8)? as usize;
-        let entry = table.fast[bits];
+        let bits = reader.peek_bits_unchecked(FAST_DECODE_BITS as u8) as usize;
+        let entry = unsafe { *table.fast.get_unchecked(bits) };
         if entry != FAST_DECODE_EMPTY {
-            reader.skip_bits((entry >> 16) as u8)?;
+            reader.skip_bits_unchecked((entry >> 16) as u8);
             return Ok(entry as u16);
         }
     }

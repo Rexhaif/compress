@@ -744,6 +744,9 @@ pub fn inverse(last_column: &[u8], primary_index: usize) -> Result<Vec<u8>> {
     if primary_index >= n {
         return Err(Error::Format("bzip2 BWT primary index is out of range"));
     }
+    if n > 0x00FF_FFFF {
+        return Err(Error::Format("bzip2 BWT block is too large"));
+    }
 
     let mut counts = [0usize; 256];
     for &byte in last_column {
@@ -763,9 +766,11 @@ pub fn inverse(last_column: &[u8], primary_index: usize) -> Result<Vec<u8>> {
         let slot = starts[byte_index];
         starts[byte_index] += 1;
         // `slot` is formed from the cumulative byte histogram and occurrence
-        // count, so every slot in `0..n` is written exactly once.
+        // count, so every slot in `0..n` is written exactly once. Pack the
+        // next LF-mapping index and byte together to avoid a second random
+        // access to `last_column` in the inverse walk.
         unsafe {
-            *next.get_unchecked_mut(slot) = index as u32;
+            *next.get_unchecked_mut(slot) = ((index as u32) << 8) | u32::from(byte);
         }
     }
 
@@ -775,8 +780,9 @@ pub fn inverse(last_column: &[u8], primary_index: usize) -> Result<Vec<u8>> {
         // `next` contains only indices produced from `last_column`, and the
         // primary index was validated above.
         unsafe {
-            position = *next.get_unchecked(position) as usize;
-            *output.get_unchecked_mut(slot) = *last_column.get_unchecked(position);
+            let entry = *next.get_unchecked(position);
+            position = (entry >> 8) as usize;
+            *output.get_unchecked_mut(slot) = entry as u8;
         }
     }
 
