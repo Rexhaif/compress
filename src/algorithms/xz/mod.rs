@@ -16,6 +16,10 @@ const PARALLEL_BLOCK_SIZE_LEVEL_0_TO_3: u64 = 8 * 1024 * 1024;
 const PARALLEL_BLOCK_SIZE_LEVEL_4_TO_6: u64 = 32 * 1024 * 1024;
 const PARALLEL_BLOCK_SIZE_LEVEL_7_TO_9: u64 = 32 * 1024 * 1024;
 const PARALLEL_BATCH_MAX_BLOCKS: usize = 64;
+const SERIAL_SKIP_INSERT_DEPTH_MAX: u32 = 20;
+const SERIAL_SKIP_INSERT_NICE_MAX: u32 = 40;
+const THREADED_SKIP_INSERT_DEPTH_MAX: u32 = 18;
+const THREADED_SKIP_INSERT_NICE_MAX: u32 = 36;
 
 #[derive(Clone, Debug)]
 pub struct XzOptions {
@@ -489,6 +493,8 @@ fn encode_block(input: &[u8], options: &XzOptions) -> Result<Block> {
 }
 
 fn lzma2_options(options: &XzOptions) -> lzma2::Lzma2Options {
+    let (skip_depth, skip_nice) = skip_insert_limits(options);
+
     lzma2::Lzma2Options {
         depth: options.depth,
         dict_size: options.dict_size,
@@ -501,6 +507,22 @@ fn lzma2_options(options: &XzOptions) -> lzma2::Lzma2Options {
             lp: options.lp,
             pb: options.pb,
         },
+        skip_depth,
+        skip_nice,
+    }
+}
+
+fn skip_insert_limits(options: &XzOptions) -> (u32, u32) {
+    // Bytes covered by an already chosen match only maintain the future search
+    // tree. Single-threaded compression can spend a little more work here for
+    // ratio, while threaded compression keeps a tighter cap for wall time.
+    if options.threads <= 1 {
+        (SERIAL_SKIP_INSERT_DEPTH_MAX, SERIAL_SKIP_INSERT_NICE_MAX)
+    } else {
+        (
+            THREADED_SKIP_INSERT_DEPTH_MAX,
+            THREADED_SKIP_INSERT_NICE_MAX,
+        )
     }
 }
 

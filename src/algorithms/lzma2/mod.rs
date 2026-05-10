@@ -18,6 +18,8 @@ pub struct Lzma2Options {
     pub nice: u32,
     pub normal_chunk_max: usize,
     pub properties: LzmaProperties,
+    pub skip_depth: u32,
+    pub skip_nice: u32,
 }
 
 pub fn encode(data: &[u8], options: &Lzma2Options) -> Result<Vec<u8>> {
@@ -361,6 +363,8 @@ fn lzma_options(options: &Lzma2Options) -> EncoderOptions {
         mode: options.mode,
         nice: options.nice,
         properties: options.properties,
+        skip_depth: options.skip_depth,
+        skip_nice: options.skip_nice,
     }
 }
 

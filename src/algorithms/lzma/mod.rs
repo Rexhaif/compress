@@ -24,10 +24,6 @@ const MATCH_LEN_MIN: usize = 2;
 const LEN_SYMBOLS: usize = MATCH_LEN_MAX - MATCH_LEN_MIN + 1;
 const MATCH_PRICE_REFRESH: u32 = 1 << 7;
 const EMPTY_MATCH: u32 = u32::MAX;
-// Bytes covered by an already chosen match only maintain the future search
-// tree, so capping their insert work buys speed with a small ratio tradeoff.
-const SKIP_INSERT_DEPTH_MAX: u32 = 18;
-const SKIP_INSERT_NICE_MAX: usize = 36;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CompressionMode {
@@ -49,6 +45,8 @@ pub struct EncoderOptions {
     pub mode: CompressionMode,
     pub nice: u32,
     pub properties: LzmaProperties,
+    pub skip_depth: u32,
+    pub skip_nice: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -122,6 +120,8 @@ pub struct LzmaEncoder {
     properties: LzmaProperties,
     rep_len_encoder: LenDecoder,
     reps: [u32; 4],
+    skip_depth: u32,
+    skip_nice: usize,
     state: u32,
 }
 
@@ -132,6 +132,9 @@ impl LzmaEncoder {
         let literal_contexts = 1usize << (options.properties.lc + options.properties.lp);
         let nice = options
             .nice
+            .clamp(MATCH_LEN_MIN as u32, MATCH_LEN_MAX as u32) as usize;
+        let skip_nice = options
+            .skip_nice
             .clamp(MATCH_LEN_MIN as u32, MATCH_LEN_MAX as u32) as usize;
         let mut encoder = LzmaEncoder {
             dictionary_start: 0,
@@ -168,6 +171,8 @@ impl LzmaEncoder {
             properties: options.properties,
             rep_len_encoder: LenDecoder::new(),
             reps: [0; 4],
+            skip_depth: options.skip_depth,
+            skip_nice,
             state: 0,
         };
 
@@ -374,8 +379,13 @@ impl LzmaEncoder {
             decision = self.lazy_greedy_decision(input, position, end, decision);
         }
 
-        self.finder
-            .skip_insert(input, position + 1, position + decision.length as usize);
+        self.finder.skip_insert(
+            input,
+            position + 1,
+            position + decision.length as usize,
+            self.skip_depth,
+            self.skip_nice,
+        );
 
         decision
     }
@@ -455,8 +465,13 @@ impl LzmaEncoder {
         );
 
         if let Some(decision) = self.fast_path_decision(input, position, end, &current_matches) {
-            self.finder
-                .skip_insert(input, position + 1, position + decision.length as usize);
+            self.finder.skip_insert(
+                input,
+                position + 1,
+                position + decision.length as usize,
+                self.skip_depth,
+                self.skip_nice,
+            );
             return decision;
         }
 
@@ -2561,9 +2576,16 @@ impl MatchFinderBt4 {
         );
     }
 
-    fn skip_insert(&mut self, input: &[u8], start: usize, end: usize) {
-        let depth = self.depth.min(SKIP_INSERT_DEPTH_MAX);
-        let nice = MATCH_LEN_MAX.min(SKIP_INSERT_NICE_MAX);
+    fn skip_insert(
+        &mut self,
+        input: &[u8],
+        start: usize,
+        end: usize,
+        skip_depth: u32,
+        skip_nice: usize,
+    ) {
+        let depth = self.depth.min(skip_depth);
+        let nice = MATCH_LEN_MAX.min(skip_nice);
 
         for position in start..end {
             let candidate = self.update_hashes(input, position);
