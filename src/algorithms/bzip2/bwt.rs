@@ -509,25 +509,26 @@ fn refine_cyclic_order(
             *next_classes.get_unchecked_mut(order[0] as usize) = 0;
         }
         let mut next_class_count = 1usize;
+        let first_position = unsafe { *order.get_unchecked(0) as usize };
+        let mut previous = unsafe {
+            (
+                *classes_by_pos.get_unchecked(first_position),
+                *classes_by_pos.get_unchecked(wrapping_add(first_position, length, n)),
+            )
+        };
         for index in 1..n {
             let current_position = unsafe { *order.get_unchecked(index) as usize };
-            let previous_position = unsafe { *order.get_unchecked(index - 1) as usize };
             let current = unsafe {
                 (
                     *classes_by_pos.get_unchecked(current_position),
                     *classes_by_pos.get_unchecked(wrapping_add(current_position, length, n)),
                 )
             };
-            let previous = unsafe {
-                (
-                    *classes_by_pos.get_unchecked(previous_position),
-                    *classes_by_pos.get_unchecked(wrapping_add(previous_position, length, n)),
-                )
-            };
 
             if current != previous {
                 next_class_count += 1;
             }
+            previous = current;
             unsafe {
                 *next_classes.get_unchecked_mut(current_position) = (next_class_count - 1) as u32;
             }
