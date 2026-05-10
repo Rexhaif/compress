@@ -506,7 +506,7 @@ fn lzma2_options(options: &XzOptions) -> lzma2::Lzma2Options {
 
 fn lzma2_normal_chunk_max(options: &XzOptions) -> usize {
     if options.threads <= 1 {
-        48 * 1024
+        64 * 1024
     } else {
         64 * 1024
     }
