@@ -2646,23 +2646,32 @@ impl MatchFinderBt4 {
 
     fn update_hashes(&mut self, input: &[u8], position: usize) -> u32 {
         if position + 2 <= input.len() {
-            self.hash2[hash2(input, position)] = position as u32;
+            let byte0 = input[position];
+            let byte1 = input[position + 1];
+            let hash2 = usize::from(byte0) | (usize::from(byte1) << 8);
+            self.hash2[hash2] = position as u32;
+
+            let temp = lz_hash_table(byte0) ^ u32::from(byte1);
+            if position + 3 <= input.len() {
+                let byte2 = input[position + 2];
+                let hash3 = ((temp ^ (u32::from(byte2) << 8)) & 0xFFFF) as usize;
+                self.hash3[hash3] = position as u32;
+
+                if position + 4 <= input.len() {
+                    let byte3 = input[position + 3];
+                    let hash4 = (temp ^ (u32::from(byte2) << 8) ^ (lz_hash_table(byte3) << 5))
+                        as usize
+                        & self.hash4_mask;
+                    let candidate = self.hash4[hash4];
+                    self.hash4[hash4] = position as u32;
+
+                    return candidate;
+                }
+            }
         }
 
-        if position + 3 <= input.len() {
-            self.hash3[hash3(input, position)] = position as u32;
-        }
-
-        if position + 4 > input.len() {
-            self.clear_current_son(position);
-            return EMPTY_MATCH;
-        }
-
-        let hash = hash4(input, position, self.hash4_mask);
-        let candidate = self.hash4[hash];
-        self.hash4[hash] = position as u32;
-
-        candidate
+        self.clear_current_son(position);
+        EMPTY_MATCH
     }
 
     fn clear_current_son(&mut self, position: usize) {
