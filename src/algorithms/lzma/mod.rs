@@ -2712,8 +2712,13 @@ impl MatchFinderBt4 {
             let pair = self.son_index(candidate_position);
             let mut length = len0.min(len1);
 
+            // `length < tree_limit` bounds both probes; candidates are always
+            // before the current position and inside the dictionary window.
             if length < tree_limit
-                && input[candidate_position + length] == input[search.position + length]
+                && unsafe {
+                    *input.get_unchecked(candidate_position + length)
+                        == *input.get_unchecked(search.position + length)
+                }
             {
                 length = match_length_from(
                     input,
@@ -2748,7 +2753,9 @@ impl MatchFinderBt4 {
                 return;
             }
 
-            if input[candidate_position + length] < input[search.position + length] {
+            let candidate_byte = unsafe { *input.get_unchecked(candidate_position + length) };
+            let current_byte = unsafe { *input.get_unchecked(search.position + length) };
+            if candidate_byte < current_byte {
                 self.son[ptr1] = candidate;
                 ptr1 = pair + 1;
                 candidate = self.son[ptr1];
@@ -2785,8 +2792,13 @@ impl MatchFinderBt4 {
             let pair = self.son_index(candidate_position);
             let mut length = len0.min(len1);
 
+            // `length < tree_limit` bounds both probes; candidates are always
+            // before the current position and inside the dictionary window.
             if length < tree_limit
-                && input[candidate_position + length] == input[search.position + length]
+                && unsafe {
+                    *input.get_unchecked(candidate_position + length)
+                        == *input.get_unchecked(search.position + length)
+                }
             {
                 length = match_length_from(
                     input,
@@ -2815,7 +2827,9 @@ impl MatchFinderBt4 {
                 return;
             }
 
-            if input[candidate_position + length] < input[search.position + length] {
+            let candidate_byte = unsafe { *input.get_unchecked(candidate_position + length) };
+            let current_byte = unsafe { *input.get_unchecked(search.position + length) };
+            if candidate_byte < current_byte {
                 candidate = self.son[pair + 1];
                 len1 = length;
             } else {
