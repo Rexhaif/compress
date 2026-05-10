@@ -3070,10 +3070,12 @@ fn normal_candidate_is_better(length: u32, distance: usize, best: MatchCandidate
     length == best.length && best.length > 0 && distance < best.distance as usize
 }
 
+#[inline(always)]
 fn match_length(input: &[u8], position: usize, candidate: usize, end: usize, nice: usize) -> usize {
     match_length_from(input, position, candidate, end, nice, 0)
 }
 
+#[inline(always)]
 fn match_length_from(
     input: &[u8],
     position: usize,
@@ -3137,6 +3139,7 @@ unsafe fn match_length_from_sse2(
     length
 }
 
+#[inline(always)]
 fn read_u64_unaligned(input: &[u8], offset: usize) -> u64 {
     debug_assert!(offset + 8 <= input.len());
 
