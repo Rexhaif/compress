@@ -1791,8 +1791,8 @@ struct LenDecoder {
     choice: [u16; 2],
     counters: [u32; NUM_POS_STATES_MAX],
     high: [u16; 1 << 8],
-    low: Vec<u16>,
-    mid: Vec<u16>,
+    low: [u16; NUM_POS_STATES_MAX * (1 << 3)],
+    mid: [u16; NUM_POS_STATES_MAX * (1 << 3)],
     prices: Vec<u32>,
     table_size: usize,
 }
@@ -1803,8 +1803,8 @@ impl LenDecoder {
             choice: [0; 2],
             counters: [0; NUM_POS_STATES_MAX],
             high: [0; 1 << 8],
-            low: vec![0; NUM_POS_STATES_MAX * (1 << 3)],
-            mid: vec![0; NUM_POS_STATES_MAX * (1 << 3)],
+            low: [0; NUM_POS_STATES_MAX * (1 << 3)],
+            mid: [0; NUM_POS_STATES_MAX * (1 << 3)],
             prices: vec![0; NUM_POS_STATES_MAX * LEN_SYMBOLS],
             table_size: LEN_SYMBOLS,
         }
