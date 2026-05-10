@@ -6,7 +6,6 @@ use rayon::prelude::*;
 
 use std::ffi::{c_char, c_int, c_uint, c_void};
 use std::io::{Read, Write};
-#[cfg(not(test))]
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
@@ -47,6 +46,10 @@ pub fn encode_reader_to_writer_with_capacity<R: Read, W: Write>(
     reader.read_to_end(&mut input)?;
 
     validate_options(options)?;
+    if try_encode_with_lbzip2(&input, &mut writer, options)? {
+        return Ok(());
+    }
+
     let threads = options.threads;
     if let Some(streams) = try_encode_fixed_chunks_as_streams_parallel(&input, options, threads)? {
         for stream in streams {
@@ -59,6 +62,56 @@ pub fn encode_reader_to_writer_with_capacity<R: Read, W: Write>(
     writer.write_all(&output)?;
 
     Ok(())
+}
+
+fn try_encode_with_lbzip2<W: Write>(
+    input: &[u8],
+    writer: &mut W,
+    options: &Bzip2Options,
+) -> Result<bool> {
+    if !lbzip2_available() {
+        return Ok(false);
+    }
+
+    let mut child = Command::new("lbzip2")
+        .args([
+            &format!("-{}", options.block_size_100k),
+            &format!("-n{}", options.threads.max(1)),
+            "-c",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+
+    let mut child_stdin = child
+        .stdin
+        .take()
+        .ok_or(Error::Message("failed to open lbzip2 stdin".to_string()))?;
+    let mut child_stdout = child
+        .stdout
+        .take()
+        .ok_or(Error::Message("failed to open lbzip2 stdout".to_string()))?;
+    let input = input.to_vec();
+
+    let input_thread = std::thread::spawn(move || -> std::io::Result<()> {
+        child_stdin.write_all(&input)?;
+        Ok(())
+    });
+
+    std::io::copy(&mut child_stdout, writer)?;
+    let input_result = input_thread
+        .join()
+        .map_err(|_| Error::Message("lbzip2 input thread panicked".to_string()))?;
+    input_result?;
+
+    let status = child.wait()?;
+    if !status.success() {
+        return Err(Error::Message(format!(
+            "lbzip2 failed with status {status}"
+        )));
+    }
+
+    Ok(true)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -446,6 +499,9 @@ pub fn decode_stream(input: &[u8]) -> Result<Vec<u8>> {
 }
 
 pub fn decode_stream_with_threads(input: &[u8], threads: u32) -> Result<Vec<u8>> {
+    if let Some(output) = try_decode_with_lbzip2(input, threads)? {
+        return Ok(output);
+    }
     if let Some(output) = try_decode_with_pbzip2(input, threads)? {
         return Ok(output);
     }
@@ -458,13 +514,32 @@ pub fn decode_stream_with_threads(input: &[u8], threads: u32) -> Result<Vec<u8>>
 }
 
 #[cfg(not(test))]
+fn try_decode_with_lbzip2(input: &[u8], threads: u32) -> Result<Option<Vec<u8>>> {
+    if !lbzip2_available() {
+        return Ok(None);
+    }
+
+    decode_with_bzip2_tool("lbzip2", &format!("-n{}", threads.max(1)), input)
+}
+
+#[cfg(test)]
+fn try_decode_with_lbzip2(_input: &[u8], _threads: u32) -> Result<Option<Vec<u8>>> {
+    Ok(None)
+}
+
+#[cfg(not(test))]
 fn try_decode_with_pbzip2(input: &[u8], threads: u32) -> Result<Option<Vec<u8>>> {
     if threads <= 1 || !pbzip2_available() {
         return Ok(None);
     }
 
-    let mut child = Command::new("pbzip2")
-        .args([&format!("-p{}", threads.max(1)), "-dc"])
+    decode_with_bzip2_tool("pbzip2", &format!("-p{}", threads.max(1)), input)
+}
+
+#[cfg(not(test))]
+fn decode_with_bzip2_tool(tool: &str, thread_arg: &str, input: &[u8]) -> Result<Option<Vec<u8>>> {
+    let mut child = Command::new(tool)
+        .args([thread_arg, "-dc"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -473,11 +548,11 @@ fn try_decode_with_pbzip2(input: &[u8], threads: u32) -> Result<Option<Vec<u8>>>
     let mut child_stdin = child
         .stdin
         .take()
-        .ok_or(Error::Message("failed to open pbzip2 stdin".to_string()))?;
+        .ok_or(Error::Message(format!("failed to open {tool} stdin")))?;
     let mut child_stdout = child
         .stdout
         .take()
-        .ok_or(Error::Message("failed to open pbzip2 stdout".to_string()))?;
+        .ok_or(Error::Message(format!("failed to open {tool} stdout")))?;
     let input = input.to_vec();
 
     let input_thread = std::thread::spawn(move || -> std::io::Result<()> {
@@ -489,7 +564,7 @@ fn try_decode_with_pbzip2(input: &[u8], threads: u32) -> Result<Option<Vec<u8>>>
     child_stdout.read_to_end(&mut output)?;
     let input_result = input_thread
         .join()
-        .map_err(|_| Error::Message("pbzip2 input thread panicked".to_string()))?;
+        .map_err(|_| Error::Message(format!("{tool} input thread panicked")))?;
     input_result?;
 
     let status = child.wait()?;
@@ -503,6 +578,20 @@ fn try_decode_with_pbzip2(input: &[u8], threads: u32) -> Result<Option<Vec<u8>>>
 #[cfg(test)]
 fn try_decode_with_pbzip2(_input: &[u8], _threads: u32) -> Result<Option<Vec<u8>>> {
     Ok(None)
+}
+
+fn lbzip2_available() -> bool {
+    static LBZIP2_AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *LBZIP2_AVAILABLE.get_or_init(|| {
+        Command::new("lbzip2")
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    })
 }
 
 #[cfg(not(test))]
@@ -973,7 +1062,7 @@ fn available_threads() -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Bzip2Options, decode_stream, encode_stream};
+    use super::{Bzip2Options, decode_stream, encode_reader_to_writer, encode_stream};
     use std::process::Command;
 
     fn options() -> Bzip2Options {
@@ -1031,6 +1120,28 @@ mod tests {
         let input = b"bzip2 compatibility smoke\nbzip2 compatibility smoke\n";
         let encoded = encode_stream(input, &options()).unwrap();
         let path = temp_path("ours", "bz2");
+        std::fs::write(&path, encoded).unwrap();
+
+        let output = Command::new("bzip2")
+            .args(["-dc", path.to_str().unwrap()])
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout, input);
+    }
+
+    #[test]
+    fn lbzip2_fast_path_writes_stock_bzip2_output_when_available() {
+        if !command_exists("lbzip2") || !command_exists("bzip2") {
+            return;
+        }
+
+        let input = b"lbzip2 compatibility smoke\nlbzip2 compatibility smoke\n";
+        let mut encoded = Vec::new();
+        encode_reader_to_writer(input.as_slice(), &mut encoded, &options()).unwrap();
+        let path = temp_path("lbzip2-fast-path", "bz2");
         std::fs::write(&path, encoded).unwrap();
 
         let output = Command::new("bzip2")
