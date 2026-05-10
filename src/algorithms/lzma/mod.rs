@@ -335,8 +335,9 @@ impl LzmaEncoder {
         );
 
         let reps = self.rep_matches(input, position, end);
+        let nice_normal = matches.best();
         let normal = adjusted_normal_candidate(&matches);
-        let decision = if let Some(decision) = self.nice_len_decision(normal, &reps) {
+        let decision = if let Some(decision) = self.nice_len_decision(nice_normal, &reps) {
             decision
         } else {
             let mut decision = choose_decision(normal, &reps);
