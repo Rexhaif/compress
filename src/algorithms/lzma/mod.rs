@@ -396,6 +396,10 @@ impl LzmaEncoder {
             return decision;
         }
 
+        if decision.kind != DecisionKind::Match {
+            return decision;
+        }
+
         let mut matches = MatchList::new();
         self.finder.peek_matches(
             input,
@@ -411,17 +415,15 @@ impl LzmaEncoder {
             synthetic_next_match(input, position + 1, position, end, self.nice),
         );
         let reps = self.rep_matches(input, position + 1, end);
-        if decision.kind == DecisionKind::Match {
-            if let Some(next_normal) = normal
-                && lazy_next_normal_beats_current(decision, next_normal)
-            {
-                return ParseDecision::literal();
-            }
+        if let Some(next_normal) = normal
+            && lazy_next_normal_beats_current(decision, next_normal)
+        {
+            return ParseDecision::literal();
+        }
 
-            let rep_limit = (decision.length.saturating_sub(1)).max(MATCH_LEN_MIN as u32);
-            if reps.iter().any(|rep| rep.length >= rep_limit) {
-                return ParseDecision::literal();
-            }
+        let rep_limit = (decision.length.saturating_sub(1)).max(MATCH_LEN_MIN as u32);
+        if reps.iter().any(|rep| rep.length >= rep_limit) {
+            return ParseDecision::literal();
         }
 
         let next = choose_decision(normal, &reps);
