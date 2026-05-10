@@ -440,7 +440,7 @@ fn preset_dict_size(level: u8, threads: u32) -> u32 {
         5 => 8 * 1024 * 1024,
         // Single-thread level 6 has enough speed margin to spend on a larger
         // dictionary; threaded level 6 keeps 8 MiB to preserve T8 throughput.
-        6 if threads <= 1 => 16 * 1024 * 1024,
+        6 if threads <= 1 => 32 * 1024 * 1024,
         6 => 8 * 1024 * 1024,
         7 => 16 * 1024 * 1024,
         8 => 32 * 1024 * 1024,
